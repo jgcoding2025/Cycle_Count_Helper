@@ -27,18 +27,14 @@ def build_review_lines(
     )
     merged = merged.drop(columns=["_merge"])
 
-    merged = merged.rename(
-        columns={
-            "Count 1 cutoff on-hand qty": "SystemQty",
-            "Count 1 qty": "CountQty",
-            "Count 1 variance qty": "VarianceQty",
-            "Item Rev Default Location": "DefaultLocation",
-        }
-    )
-
     merged.insert(0, "SessionId", session_id)
 
-    cols = [
+    merged["SystemQty"] = merged["Count 1 cutoff on-hand qty"]
+    merged["CountQty"] = merged["Count 1 qty"]
+    merged["VarianceQty"] = merged["Count 1 variance qty"]
+    merged["DefaultLocation"] = merged["Item Rev Default Location"]
+
+    preferred = [
         "SessionId",
         "Whs",
         "Item",
@@ -53,17 +49,8 @@ def build_review_lines(
         "Missing Location Master",
     ]
 
-    for c in ["Tag", "Assigned to", "Description", "Allocated", "Cur cost", "Count 1 entry on-hand qty", "Count Status", "Notes"]:
-        if c in merged.columns and c not in cols:
-            cols.append(c)
-
-
-    for c in ["Allocation Priority", "Stock Area", "Supervisor"]:
-        if c in merged.columns and c not in cols:
-            cols.append(c)
-
-    cols = [c for c in cols if c in merged.columns]
-    out = merged[cols].copy()
+    final_cols = preferred + [c for c in merged.columns if c not in preferred]
+    out = merged[final_cols].copy()
 
     out = out.sort_values(
         ["Whs", "Item", "Batch/lot", "Location"],
