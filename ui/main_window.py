@@ -95,6 +95,24 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(filters)
 
+        # ---------- SIGNALS ----------
+        self.btn_load_locations.clicked.connect(self._pick_locations)
+        self.btn_load_recount.clicked.connect(self._pick_recount)
+        self.btn_build_review.clicked.connect(self._build_review)
+        self.btn_export.clicked.connect(self._export_xlsx)
+
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.itemChanged.connect(self._on_item_changed)
+
+        self.filter_search.textChanged.connect(self._apply_filters)
+        self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
+        self.btn_show_actions.clicked.connect(lambda: self._set_filter_mode("ACTIONS"))
+        self.btn_show_secured.clicked.connect(lambda: self._set_filter_mode("SECURED"))
+        self.btn_show_investigate.clicked.connect(lambda: self._set_filter_mode("INVESTIGATE"))
+
+        self._filter_mode = "ALL"
+        self._updating_table = False
+
 
         # ---------- STATUS ----------
         self.status_label = QLabel("Load both files to begin.")
@@ -118,24 +136,6 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         root_layout.addWidget(splitter, 1)
 
-        # Wire events
-        self.btn_load_locations.clicked.connect(self._pick_locations_file)
-        self.btn_load_recount.clicked.connect(self._pick_recount_file)
-        self.btn_build_review.clicked.connect(self._build_review_placeholder)
-        self.btn_export.clicked.connect(self._export_xlsx)
-
-        self._filter_mode = "ALL"
-
-
-        # ---------- SIGNALS ----------
-        self.btn_load_locations.clicked.connect(self._pick_locations)
-        self.btn_load_recount.clicked.connect(self._pick_recount)
-        self.btn_build.clicked.connect(self._build_review)
-        self.btn_export.clicked.connect(self._export_xlsx)
-
-        self.table.itemChanged.connect(self._on_item_changed)
-        self._updating_table = False
-
     # ---------- FILE PICKERS ----------
     def _pick_locations(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select Warehouse Locations", "", "Excel (*.xlsx)")
@@ -153,7 +153,8 @@ class MainWindow(QMainWindow):
 
     def _update_ready_state(self) -> None:
         ready = self.paths.warehouse_locations_path and self.paths.recount_path
-        self.btn_build.setEnabled(bool(ready))
+        self.btn_build_review.setEnabled(bool(ready))
+
 
     # ---------- BUILD REVIEW ----------
     def _build_review(self) -> None:
