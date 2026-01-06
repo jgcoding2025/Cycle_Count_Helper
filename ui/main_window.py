@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-from core.notes_db import NotesDB, NoteKey
-from core.exporter import export_workbook
-
-from core.recommender import apply_recommendations
-
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +23,9 @@ from PySide6.QtWidgets import (
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
 from core.review_builder import build_review_lines
+from core.recommender import apply_recommendations
+from core.notes_db import NotesDB, NoteKey
+from core.exporter import export_workbook
 
 
 @dataclass
@@ -39,23 +37,21 @@ class LoadedPaths:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Cycle Count Assistant (MVP)")
-        self.resize(1200, 750)
+        self.setWindowTitle("Cycle Count Assistant")
+        self.resize(1300, 800)
 
         self.paths = LoadedPaths()
-
-        self.notes_db = NotesDB(Path("data") / "cyclecount_notes.db")
-
         self.review_df: pd.DataFrame | None = None
         self.transfers_df: pd.DataFrame | None = None
         self.group_df: pd.DataFrame | None = None
 
+        self.notes_db = NotesDB(Path("data") / "cyclecount_notes.db")
 
         root = QWidget()
         self.setCentralWidget(root)
         root_layout = QVBoxLayout(root)
 
-        # --- Top controls ---
+        # ---------- TOP CONTROLS ----------
         top = QWidget()
         self.top_layout = QHBoxLayout(top)
         self.top_layout.setContentsMargins(0, 0, 0, 0)
@@ -68,7 +64,7 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(False)
 
         self.session_id = QLineEdit()
-        self.session_id.setPlaceholderText("SessionId (e.g., 20250113)")
+        self.session_id.setPlaceholderText("SessionId (e.g. 20260106)")
 
         self.top_layout.addWidget(self.btn_load_locations)
         self.top_layout.addWidget(self.btn_load_recount)
@@ -79,36 +75,44 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(top)
 
-        # --- Status line ---
+        filters = QWidget()
+        filters_layout = QHBoxLayout(filters)
+
+        self.filter_search = QLineEdit()
+        self.filter_search.setPlaceholderText("Search Item / Location / Tag / Description...")
+
+        self.btn_show_all = QPushButton("Show All")
+        self.btn_show_actions = QPushButton("Only Actions (Adjust/Transfer/Investigate)")
+        self.btn_show_secured = QPushButton("Only Secured Variance")
+        self.btn_show_investigate = QPushButton("Only Investigate")
+
+        filters_layout.addWidget(QLabel("Filter:"))
+        filters_layout.addWidget(self.filter_search, 1)
+        filters_layout.addWidget(self.btn_show_all)
+        filters_layout.addWidget(self.btn_show_actions)
+        filters_layout.addWidget(self.btn_show_secured)
+        filters_layout.addWidget(self.btn_show_investigate)
+
+        root_layout.addWidget(filters)
+
+
+        # ---------- STATUS ----------
         self.status_label = QLabel("Load both files to begin.")
-        self.status_label.setWordWrap(True)
         root_layout.addWidget(self.status_label)
 
-        # --- Split area: table + details (placeholder) ---
+        # ---------- TABLE ----------
         splitter = QSplitter(Qt.Horizontal)
 
-        self.table = QTableWidget(0, 0)
-        self.table.itemChanged.connect(self._on_table_item_changed)
-        self._updating_table = False
-
+        self.table = QTableWidget()
         self.table.setSortingEnabled(True)
         splitter.addWidget(self.table)
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(QLabel("Group Details (Step 3+)"))
-        self.details = QLabel(
-            "Once we implement logic, clicking a row will show:\n"
-            "- DefaultLocation\n"
-            "- Transfer plan\n"
-            "- DefaultAfterTransfers\n"
-            "- Remaining adjustment\n"
-            "- Flags (secured variance, default empty, missing master)"
-        )
-        self.details.setStyleSheet("QLabel { color: #cccccc; }")
+        self.details = QLabel("Click a row to see group details.")
         self.details.setWordWrap(True)
-        right_layout.addWidget(self.details, 1)
-        splitter.addWidget(right_panel)
+        self.details.setStyleSheet("color: #cccccc;")
+        splitter.addWidget(self.details)
+
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -120,93 +124,45 @@ class MainWindow(QMainWindow):
         self.btn_build_review.clicked.connect(self._build_review_placeholder)
         self.btn_export.clicked.connect(self._export_xlsx)
 
-    def _pick_locations_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Warehouse Locations.xlsx",
-            "",
-            "Excel Files (*.xlsx)",
-        )
-        if not path:
-            return
-        self.paths.warehouse_locations_path = Path(path)
-        self._update_status()
-
-    def _pick_recount_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Recount Workbook.xlsx",
-            "",
-            "Excel Files (*.xlsx)",
-        )
-        if not path:
-            return
-        self.paths.recount_path = Path(path)
-        self._update_status()
-
-        if not self.session_id.text().strip():
-            stem = self.paths.recount_path.stem
-            digits = "".join(ch for ch in stem if ch.isdigit())
-            if len(digits) >= 8:
-                self.session_id.setText(digits[:8])
-
-    def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
-        if getattr(self, "_updating_table", False):
-            return
-        if self.review_df is None:
-            return
-        if getattr(self, "_col_usernotes", -1) < 0:
-            return
-        if item.column() != self._col_usernotes:
-            return
-
-        row = item.row()
-        new_note = item.text()
-
-        sid = self.session_id.text().strip()
-        whs = str(self.review_df.at[row, "Whs"])
-        it = str(self.review_df.at[row, "Item"])
-        lot = str(self.review_df.at[row, "Batch/lot"])
-        loc = str(self.review_df.at[row, "Location"])
-
-        key = NoteKey(sid, whs, it, lot, loc)
-        updated_at = self.notes_db.upsert_note(key, new_note)
-
-        # Update dataframe + table cell for NoteUpdatedAt
-        self.review_df.at[row, "UserNotes"] = new_note
-        self.review_df.at[row, "NoteUpdatedAt"] = updated_at
-
-        # update visible NoteUpdatedAt cell if present
-        try:
-            col_updated = list(self.review_df.columns).index("NoteUpdatedAt")
-            self._updating_table = True
-            self.table.item(row, col_updated).setText(updated_at)
-        finally:
-            self._updating_table = False
+        self._filter_mode = "ALL"
 
 
-    def _update_status(self) -> None:
-        loc = str(self.paths.warehouse_locations_path) if self.paths.warehouse_locations_path else "(not loaded)"
-        rec = str(self.paths.recount_path) if self.paths.recount_path else "(not loaded)"
-        self.status_label.setText(f"Warehouse Locations: {loc}\nRecount Workbook: {rec}")
+        # ---------- SIGNALS ----------
+        self.btn_load_locations.clicked.connect(self._pick_locations)
+        self.btn_load_recount.clicked.connect(self._pick_recount)
+        self.btn_build.clicked.connect(self._build_review)
+        self.btn_export.clicked.connect(self._export_xlsx)
 
-        ready = self.paths.warehouse_locations_path is not None and self.paths.recount_path is not None
-        self.btn_build_review.setEnabled(ready)
+        self.table.itemChanged.connect(self._on_item_changed)
+        self._updating_table = False
 
-    def _build_review_placeholder(self) -> None:
-        if not self.paths.warehouse_locations_path or not self.paths.recount_path:
-            QMessageBox.warning(self, "Missing files", "Please load both files first.")
-            return
+    # ---------- FILE PICKERS ----------
+    def _pick_locations(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select Warehouse Locations", "", "Excel (*.xlsx)")
+        if path:
+            self.paths.warehouse_locations_path = Path(path)
+            self._update_ready_state()
 
+    def _pick_recount(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select Recount File", "", "Excel (*.xlsx)")
+        if path:
+            self.paths.recount_path = Path(path)
+            if not self.session_id.text().strip():
+                self.session_id.setText(self.paths.recount_path.stem[:8])
+            self._update_ready_state()
+
+    def _update_ready_state(self) -> None:
+        ready = self.paths.warehouse_locations_path and self.paths.recount_path
+        self.btn_build.setEnabled(bool(ready))
+
+    # ---------- BUILD REVIEW ----------
+    def _build_review(self) -> None:
         sid = self.session_id.text().strip()
         if not sid:
-            QMessageBox.warning(self, "Missing SessionId", "Please enter a SessionId (e.g., 20250113).")
+            QMessageBox.warning(self, "Missing SessionId", "Enter a SessionId.")
             return
 
         try:
-            self.status_label.setText("Loading Excel files...")
-            QApplication.processEvents()
-
             loc_df = load_warehouse_locations(self.paths.warehouse_locations_path)
             rec_df = load_recount_workbook(self.paths.recount_path)
             review_df = build_review_lines(sid, rec_df, loc_df)
@@ -226,20 +182,18 @@ class MainWindow(QMainWindow):
             review_df["NoteUpdatedAt"] = ""
 
             for i in range(len(review_df)):
-                whs = str(review_df.at[i, "Whs"])
-                item = str(review_df.at[i, "Item"])
-                lot = str(review_df.at[i, "Batch/lot"])
-                loc = str(review_df.at[i, "Location"])
-                key = NoteKey(sid, whs, item, lot, loc)
-                if key in notes_map:
-                    note, updated = notes_map[key]
-                    review_df.at[i, "UserNotes"] = note
-                    review_df.at[i, "NoteUpdatedAt"] = updated
-
+                key = NoteKey(
+                    sid,
+                    str(review_df.at[i, "Whs"]),
+                    str(review_df.at[i, "Item"]),
+                    str(review_df.at[i, "Batch/lot"]),
+                    str(review_df.at[i, "Location"]),
+                )
+                if key in notes:
+                    review_df.at[i, "UserNotes"] = notes[key][0]
+                    review_df.at[i, "NoteUpdatedAt"] = notes[key][1]
 
             self.review_df = review_df
-            self.btn_export.setEnabled(True)
-
             self.transfers_df = transfers_df
             self.group_df = group_df
 
@@ -250,12 +204,15 @@ class MainWindow(QMainWindow):
 
         self._set_table_from_df(self.review_df)
 
-        adj_groups = 0 if self.group_df is None else int((self.group_df["RemainingAdjustmentQty"] != 0).sum())
-        transfer_lines = 0 if self.transfers_df is None else len(self.transfers_df)
+        r = item.row()
+        sid = self.session_id.text().strip()
 
-        self.status_label.setText(
-            f"Loaded {len(loc_df):,} locations and {len(rec_df):,} recount rows.\n"
-            f"Review_Lines rows: {len(review_df):,} | Transfer suggestions: {transfer_lines:,} | Groups w/ adjustment: {adj_groups:,}"
+        key = NoteKey(
+            sid,
+            str(self.review_df.at[r, "Whs"]),
+            str(self.review_df.at[r, "Item"]),
+            str(self.review_df.at[r, "Batch/lot"]),
+            str(self.review_df.at[r, "Location"]),
         )
 
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
@@ -311,36 +268,115 @@ class MainWindow(QMainWindow):
         finally:
             self._updating_table = False
 
-    def _export_xlsx(self) -> None:
-        if self.review_df is None or self.group_df is None or self.transfers_df is None:
-            QMessageBox.warning(self, "Nothing to export", "Build the review table first.")
+    def _on_selection_changed(self) -> None:
+        if self.review_df is None or self.group_df is None:
+            return
+        items = self.table.selectedItems()
+        if not items:
             return
 
-        sid = self.session_id.text().strip() or "Session"
-        default_name = f"CycleCountReview_{sid}.xlsx"
+        r = items[0].row()
 
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Export Workbook",
-            default_name,
-            "Excel Files (*.xlsx)",
+        whs = str(self.review_df.at[r, "Whs"])
+        item = str(self.review_df.at[r, "Item"])
+        lot = str(self.review_df.at[r, "Batch/lot"])
+        loc = str(self.review_df.at[r, "Location"])
+        default_loc = str(self.review_df.at[r, "DefaultLocation"])
+
+        headline = str(self.review_df.at[r, "GroupHeadline"])
+        rec_type = str(self.review_df.at[r, "RecommendationType"])
+        reason = str(self.review_df.at[r, "Reason"])
+        remaining = self.review_df.at[r, "RemainingAdjustmentQty"]
+        conf = str(self.review_df.at[r, "Confidence"])
+        sev = str(self.review_df.at[r, "Severity"])
+
+        # group row lookup
+        gmatch = self.group_df[
+            (self.group_df["Whs"] == whs) &
+            (self.group_df["Item"] == item) &
+            (self.group_df["Batch/lot"] == lot)
+        ]
+        if not gmatch.empty:
+            g = gmatch.iloc[0].to_dict()
+            sys_total = g.get("SystemTotal", "")
+            count_total = g.get("CountTotal", "")
+            net_var = g.get("NetVariance", "")
+            st01 = g.get("SysST01", "")
+            def_after = g.get("DefaultSystemAfter", "")
+            def_count = g.get("DefaultCount", "")
+            flags = g.get("Flags", "")
+        else:
+            sys_total = count_total = net_var = st01 = def_after = def_count = flags = ""
+
+        # transfer lines for this group
+        transfer_text = ""
+        if self.transfers_df is not None and not self.transfers_df.empty:
+            t = self.transfers_df[
+                (self.transfers_df["Whs"] == whs) &
+                (self.transfers_df["Item"] == item) &
+                (self.transfers_df["Batch/lot"] == lot)
+            ]
+            if not t.empty:
+                lines = []
+                for _, tr in t.iterrows():
+                    lines.append(f"- {tr['Qty']} : {tr['FromLocation']} → {tr['ToLocation']}")
+                transfer_text = "\n".join(lines)
+
+        self.details.setText(
+            f"Group: {whs} | {item} | {lot}\n"
+            f"Selected Location: {loc}\n"
+            f"Default: {default_loc}\n\n"
+            f"Headline: {headline}\n"
+            f"RecommendationType (row): {rec_type}\n"
+            f"RemainingAdjustmentQty (group): {remaining}\n"
+            f"Confidence: {conf} | Severity: {sev}\n\n"
+            f"Totals: System={sys_total}  Count={count_total}  NetVar={net_var}\n"
+            f"ST01(System)={st01}  DefaultAfterTransfers={def_after}  DefaultCount={def_count}\n"
+            f"Flags: {flags}\n\n"
+            f"Transfers:\n{transfer_text if transfer_text else '(none)'}\n\n"
+            f"Reason:\n{reason}"
         )
+
+    def _set_filter_mode(self, mode: str) -> None:
+        self._filter_mode = mode
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        if self.review_df is None:
+            return
+
+        df = self.review_df.copy()
+
+        mode = getattr(self, "_filter_mode", "ALL")
+        if mode == "ACTIONS":
+            df = df[df["RecommendationType"].isin(["TRANSFER", "ADJUST", "INVESTIGATE"])]
+        elif mode == "SECURED":
+            # secured variance shows up as headline or flags; easiest filter is Location Type + Variance
+            if "Location Type" in df.columns:
+                df = df[(df["Location Type"].astype(str).str.lower() == "secured") & (df["VarianceQty"] != 0)]
+        elif mode == "INVESTIGATE":
+            df = df[df["RecommendationType"] == "INVESTIGATE"]
+
+        q = self.filter_search.text().strip().lower()
+        if q:
+            cols = [c for c in ["Item", "Location", "Tag", "Description", "GroupHeadline"] if c in df.columns]
+            if cols:
+                mask = False
+                for c in cols:
+                    mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False)
+                df = df[mask]
+
+        # Re-render table (keeps notes editing)
+        self._set_table_from_df(df)
+
+
+    # ---------- EXPORT ----------
+    def _export_xlsx(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save Export", "", "Excel (*.xlsx)")
         if not path:
             return
-
-        try:
-            export_workbook(
-                Path(path),
-                self.review_df,
-                self.group_df,
-                self.transfers_df,
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Export failed", str(e))
-            return
-
-        QMessageBox.information(self, "Export complete", f"Saved:\n{path}")
-
+        export_workbook(Path(path), self.review_df, self.group_df, self.transfers_df)
+        QMessageBox.information(self, "Export Complete", f"Saved to:\n{path}")
 
 
 def run_app() -> None:
