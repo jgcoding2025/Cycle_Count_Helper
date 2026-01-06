@@ -95,25 +95,6 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(filters)
 
-        # ---------- SIGNALS ----------
-        self.btn_load_locations.clicked.connect(self._pick_locations)
-        self.btn_load_recount.clicked.connect(self._pick_recount)
-        self.btn_build_review.clicked.connect(self._build_review)
-        self.btn_export.clicked.connect(self._export_xlsx)
-
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        self.table.itemChanged.connect(self._on_item_changed)
-
-        self.filter_search.textChanged.connect(self._apply_filters)
-        self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
-        self.btn_show_actions.clicked.connect(lambda: self._set_filter_mode("ACTIONS"))
-        self.btn_show_secured.clicked.connect(lambda: self._set_filter_mode("SECURED"))
-        self.btn_show_investigate.clicked.connect(lambda: self._set_filter_mode("INVESTIGATE"))
-
-        self._filter_mode = "ALL"
-        self._updating_table = False
-
-
         # ---------- STATUS ----------
         self.status_label = QLabel("Load both files to begin.")
         root_layout.addWidget(self.status_label)
@@ -130,11 +111,27 @@ class MainWindow(QMainWindow):
         self.details.setStyleSheet("color: #cccccc;")
         splitter.addWidget(self.details)
 
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
-
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         root_layout.addWidget(splitter, 1)
+
+        # ---------- SIGNALS ----------
+        self.btn_load_locations.clicked.connect(self._pick_locations)
+        self.btn_load_recount.clicked.connect(self._pick_recount)
+        self.btn_build_review.clicked.connect(self._build_review)
+        self.btn_export.clicked.connect(self._export_xlsx)
+
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.itemChanged.connect(self._on_item_changed)
+
+        self.filter_search.textChanged.connect(self._apply_filters)
+        self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
+        self.btn_show_actions.clicked.connect(lambda: self._set_filter_mode("ACTIONS"))
+        self.btn_show_secured.clicked.connect(lambda: self._set_filter_mode("SECURED"))
+        self.btn_show_investigate.clicked.connect(lambda: self._set_filter_mode("INVESTIGATE"))
+
+        self._filter_mode = "ALL"
+        self._updating_table = False    
 
     # ---------- FILE PICKERS ----------
     def _pick_locations(self) -> None:
@@ -204,6 +201,7 @@ class MainWindow(QMainWindow):
             return
 
         self._set_table_from_df(self.review_df)
+        self.btn_export.setEnabled(True)
 
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
         self.table.clear()
