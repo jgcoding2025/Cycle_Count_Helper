@@ -176,22 +176,22 @@ class MainWindow(QMainWindow):
                 raise ValueError(f"Columns lost while building review table: {missing_columns}")
 
             # Merge in persisted notes
-            notes_map = self.notes_db.read_notes_for_session(sid)
+            notes = self.notes_db.read_notes_for_session(sid)
 
             review_df["UserNotes"] = ""
             review_df["NoteUpdatedAt"] = ""
 
             for i in range(len(review_df)):
-                key = NoteKey(
-                    sid,
-                    str(review_df.at[i, "Whs"]),
-                    str(review_df.at[i, "Item"]),
-                    str(review_df.at[i, "Batch/lot"]),
-                    str(review_df.at[i, "Location"]),
-                )
+                whs = str(review_df.at[i, "Whs"])
+                item_code = str(review_df.at[i, "Item"])
+                lot = str(review_df.at[i, "Batch/lot"])
+                loc = str(review_df.at[i, "Location"])
+                key = NoteKey(sid, whs, item_code, lot, loc)
                 if key in notes:
-                    review_df.at[i, "UserNotes"] = notes[key][0]
-                    review_df.at[i, "NoteUpdatedAt"] = notes[key][1]
+                    note_text, updated = notes[key]
+                    review_df.at[i, "UserNotes"] = note_text
+                    review_df.at[i, "NoteUpdatedAt"] = updated
+
 
             self.review_df = review_df
             self.transfers_df = transfers_df
