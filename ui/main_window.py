@@ -26,7 +26,7 @@ from core.review_builder import build_review_lines
 from core.recommender import apply_recommendations
 from core.notes_db import NotesDB, NoteKey
 from core.exporter import export_workbook
-
+from datetime import datetime
 
 @dataclass
 class LoadedPaths:
@@ -204,17 +204,6 @@ class MainWindow(QMainWindow):
 
         self._set_table_from_df(self.review_df)
 
-        r = item.row()
-        sid = self.session_id.text().strip()
-
-        key = NoteKey(
-            sid,
-            str(self.review_df.at[r, "Whs"]),
-            str(self.review_df.at[r, "Item"]),
-            str(self.review_df.at[r, "Batch/lot"]),
-            str(self.review_df.at[r, "Location"]),
-        )
-
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
         self.table.clear()
         self.table.setColumnCount(len(headers))
@@ -336,6 +325,38 @@ class MainWindow(QMainWindow):
             f"Transfers:\n{transfer_text if transfer_text else '(none)'}\n\n"
             f"Reason:\n{reason}"
         )
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        # prevent recursion when we are programmatically populating the table
+        if getattr(self, "_updating_table", False):
+            return
+        if self.review_df is None:
+            return
+        if getattr(self, "_col_usernotes", -1) < 0:
+            return
+        if item.column() != self._col_usernotes:
+            return
+
+        r = item.row()
+        sid = self.session_id.text().strip()
+
+        whs = str(self.review_df.at[r, "Whs"])
+        part = str(self.review_df.at[r, "Item"])
+        lot = str(self.review_df.at[r, "Batch/lot"])
+        loc = str(self.review_df.at[r, "Location"])
+
+        note_text = item.text()
+        updated = datetime.now().isoformat(timespec="seconds")
+
+        # update dataframe
+        self.review_df.at[r, "UserNotes"] = note_text
+        if "NoteUpdatedAt" in self.review_df.columns:
+            self.review_df.at[r, "NoteUpdatedAt"] = updated
+
+        # persist
+        key = NoteKey(sid, whs, part, lot, loc)
+        self.notes_db.write_note(key, note_text, updated)
+
 
     def _set_filter_mode(self, mode: str) -> None:
         self._filter_mode = mode
