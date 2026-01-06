@@ -33,20 +33,17 @@ def load_warehouse_locations(path: Path) -> pd.DataFrame:
     df["Whs"] = df["Whs"].astype("string").str.strip()
     df["Location"] = _to_str_upper(df["Location"])
 
-    # Keep only columns we care about for now (we can add more later)
-    keep = [
+    preferred = [
         "Whs",
         "Location",
         "Location Type",
         "Allocation Category",
     ]
-    # Include optional columns if present (nice-to-have)
     optional = ["Allocation Priority", "Stock Area", "Supervisor"]
-    for c in optional:
-        if c in df.columns:
-            keep.append(c)
+    preferred += [c for c in optional if c in df.columns]
+    final_cols = preferred + [c for c in df.columns if c not in preferred]
 
-    return df[keep].copy()
+    return df[final_cols].copy()
 
 
 def load_recount_workbook(path: Path) -> pd.DataFrame:
@@ -93,18 +90,19 @@ def load_recount_workbook(path: Path) -> pd.DataFrame:
     for c in ["Count 1 cutoff on-hand qty", "Count 1 qty", "Count 1 variance qty"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    # Keep extras if present (useful for later)
+    # Prefer a stable order, but keep all columns
     optional = [
-    "Tag",
-    "Assigned to",
-    "Description",
-    "Allocated",
-    "Cur cost",
-    "Count 1 entry on-hand qty",
-    "Count Status",
-    "Notes",
+        "Tag",
+        "Assigned to",
+        "Description",
+        "Allocated",
+        "Cur cost",
+        "Count 1 entry on-hand qty",
+        "Count Status",
+        "Notes",
     ]
 
-    keep = required + [c for c in optional if c in df.columns]
+    preferred = required + [c for c in optional if c in df.columns]
+    final_cols = preferred + [c for c in df.columns if c not in preferred]
 
-    return df[keep].copy()
+    return df[final_cols].copy()

@@ -53,25 +53,25 @@ class MainWindow(QMainWindow):
 
         # ---------- TOP CONTROLS ----------
         top = QWidget()
-        top_layout = QHBoxLayout(top)
+        self.top_layout = QHBoxLayout(top)
+        self.top_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_load_locations = QPushButton("Load Warehouse Locations")
-        self.btn_load_recount = QPushButton("Load Recount File")
-        self.btn_build = QPushButton("Build Review")
+        self.btn_load_locations = QPushButton("Load Warehouse Locations.xlsx")
+        self.btn_load_recount = QPushButton("Load Recount Workbook.xlsx")
+        self.btn_build_review = QPushButton("Build Review Table")
+        self.btn_build_review.setEnabled(False)
         self.btn_export = QPushButton("Export XLSX")
-
-        self.btn_build.setEnabled(False)
         self.btn_export.setEnabled(False)
 
         self.session_id = QLineEdit()
         self.session_id.setPlaceholderText("SessionId (e.g. 20260106)")
 
-        top_layout.addWidget(self.btn_load_locations)
-        top_layout.addWidget(self.btn_load_recount)
-        top_layout.addWidget(QLabel("Session:"))
-        top_layout.addWidget(self.session_id)
-        top_layout.addWidget(self.btn_build)
-        top_layout.addWidget(self.btn_export)
+        self.top_layout.addWidget(self.btn_load_locations)
+        self.top_layout.addWidget(self.btn_load_recount)
+        self.top_layout.addWidget(QLabel("SessionId:"))
+        self.top_layout.addWidget(self.session_id, 1)
+        self.top_layout.addWidget(self.btn_build_review)
+        self.top_layout.addWidget(self.btn_export)
 
         root_layout.addWidget(top)
 
@@ -118,11 +118,11 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         root_layout.addWidget(splitter, 1)
 
-        self.filter_search.textChanged.connect(self._apply_filters)
-        self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
-        self.btn_show_actions.clicked.connect(lambda: self._set_filter_mode("ACTIONS"))
-        self.btn_show_secured.clicked.connect(lambda: self._set_filter_mode("SECURED"))
-        self.btn_show_investigate.clicked.connect(lambda: self._set_filter_mode("INVESTIGATE"))
+        # Wire events
+        self.btn_load_locations.clicked.connect(self._pick_locations_file)
+        self.btn_load_recount.clicked.connect(self._pick_recount_file)
+        self.btn_build_review.clicked.connect(self._build_review_placeholder)
+        self.btn_export.clicked.connect(self._export_xlsx)
 
         self._filter_mode = "ALL"
 
@@ -167,10 +167,13 @@ class MainWindow(QMainWindow):
             rec_df = load_recount_workbook(self.paths.recount_path)
 
             review_df = build_review_lines(sid, rec_df, loc_df)
+
+            # Step 3: recommendations + transfer plan + group summary
             review_df, transfers_df, group_df = apply_recommendations(review_df)
 
-            # merge notes
-            notes = self.notes_db.read_notes_for_session(sid)
+            # Merge in persisted notes
+            notes_map = self.notes_db.read_notes_for_session(sid)
+
             review_df["UserNotes"] = ""
             review_df["NoteUpdatedAt"] = ""
 
