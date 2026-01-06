@@ -38,14 +38,20 @@ def _group_headline(flags: dict, remaining_adj: float, has_transfers: bool) -> s
         return "Investigate: secured location variance"
     if flags.get("default_empty"):
         return "Action needed: default empty (update default or move material)"
+
     if remaining_adj != 0:
-        if remaining_adj > 0:
-            return f"Adjust up {remaining_adj:g} after transfers"
-        return f"Adjust down {abs(remaining_adj):g} after transfers"
+        direction = "up" if remaining_adj > 0 else "down"
+        qty = abs(remaining_adj)
+
+        if has_transfers:
+            return f"Adjust {direction} {qty:g} after transfers"
+        else:
+            return f"Adjust {direction} {qty:g}"
+
     if has_transfers:
         return "Transfers only (resolve via default)"
-    return "No variance"
 
+    return "No variance"
 
 def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -271,23 +277,40 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
             group_conf = _confidence_cap(group_conf, "Med")
 
         if default_count == 0:
-            flags["default_empty"] = True
-            group_flags_str.append("DefaultEmpty")
-            group_sev = max(group_sev, 85)
-            group_conf = _confidence_cap(group_conf, "Med")
+        # NEW RULE:
+        # For unsecured+available defaults, if any qty exists in ST01, assume the default location may be physically full,
+        # so default showing empty is not an issue.
+            if default_eligible and sys_st01 > 0:
+                default_reason_lines.append(
+                    "Default count is 0, but SysST01 has inventory. Assume default may be physically full; no default-empty issue."
+                )
+                remaining_adj = 0.0
 
-            default_reason_lines.append(
-                "Default location count is 0; recommend updating default location or physically moving material to default."
-            )
-            # No min/max enforcement when default is empty; do not propose adjustment here.
-            remaining_adj = 0.0
+                # Mark default row(s) as no action (transfers may still reconcile secondaries)
+                for didx in default_rows.index:
+                    df.loc[didx, "RecommendationType"] = "NO_ACTION"
+                    df.loc[didx, "Reason"] = " ".join(default_reason_lines)
+                    df.loc[didx, "Confidence"] = group_conf
+                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 25)
 
-            # Mark default row(s)
-            for didx in default_rows.index:
-                df.loc[didx, "RecommendationType"] = "INVESTIGATE"
-                df.loc[didx, "Reason"] = "Default empty; update default or move material. Transfers reconcile secondaries."
-                df.loc[didx, "Confidence"] = group_conf
-                df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 85)
+            else:
+                flags["default_empty"] = True
+                group_flags_str.append("DefaultEmpty")
+                group_sev = max(group_sev, 85)
+                group_conf = _confidence_cap(group_conf, "Med")
+
+                default_reason_lines.append(
+                    "Default location count is 0; recommend updating default location or physically moving material to default."
+                )
+                # No min/max enforcement when default is empty; do not propose adjustment here.
+                remaining_adj = 0.0
+
+                # Mark default row(s)
+                for didx in default_rows.index:
+                    df.loc[didx, "RecommendationType"] = "INVESTIGATE"
+                    df.loc[didx, "Reason"] = "Default empty; update default or move material. Transfers reconcile secondaries."
+                    df.loc[didx, "Confidence"] = group_conf
+                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 85)
 
         else:
             if default_eligible:
