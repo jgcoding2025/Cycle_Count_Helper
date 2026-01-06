@@ -75,6 +75,27 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(top)
 
+        filters = QWidget()
+        filters_layout = QHBoxLayout(filters)
+
+        self.filter_search = QLineEdit()
+        self.filter_search.setPlaceholderText("Search Item / Location / Tag / Description...")
+
+        self.btn_show_all = QPushButton("Show All")
+        self.btn_show_actions = QPushButton("Only Actions (Adjust/Transfer/Investigate)")
+        self.btn_show_secured = QPushButton("Only Secured Variance")
+        self.btn_show_investigate = QPushButton("Only Investigate")
+
+        filters_layout.addWidget(QLabel("Filter:"))
+        filters_layout.addWidget(self.filter_search, 1)
+        filters_layout.addWidget(self.btn_show_all)
+        filters_layout.addWidget(self.btn_show_actions)
+        filters_layout.addWidget(self.btn_show_secured)
+        filters_layout.addWidget(self.btn_show_investigate)
+
+        root_layout.addWidget(filters)
+
+
         # ---------- STATUS ----------
         self.status_label = QLabel("Load both files to begin.")
         root_layout.addWidget(self.status_label)
@@ -86,13 +107,25 @@ class MainWindow(QMainWindow):
         self.table.setSortingEnabled(True)
         splitter.addWidget(self.table)
 
-        details = QLabel("Group details will go here later.")
-        details.setStyleSheet("color: gray;")
-        splitter.addWidget(details)
+        self.details = QLabel("Click a row to see group details.")
+        self.details.setWordWrap(True)
+        self.details.setStyleSheet("color: #cccccc;")
+        splitter.addWidget(self.details)
+
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         root_layout.addWidget(splitter, 1)
+
+        self.filter_search.textChanged.connect(self._apply_filters)
+        self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
+        self.btn_show_actions.clicked.connect(lambda: self._set_filter_mode("ACTIONS"))
+        self.btn_show_secured.clicked.connect(lambda: self._set_filter_mode("SECURED"))
+        self.btn_show_investigate.clicked.connect(lambda: self._set_filter_mode("INVESTIGATE"))
+
+        self._filter_mode = "ALL"
+
 
         # ---------- SIGNALS ----------
         self.btn_load_locations.clicked.connect(self._pick_locations)
@@ -210,6 +243,108 @@ class MainWindow(QMainWindow):
         ts = self.notes_db.upsert_note(key, item.text())
         self.review_df.at[r, "UserNotes"] = item.text()
         self.review_df.at[r, "NoteUpdatedAt"] = ts
+
+    def _on_selection_changed(self) -> None:
+        if self.review_df is None or self.group_df is None:
+            return
+        items = self.table.selectedItems()
+        if not items:
+            return
+
+        r = items[0].row()
+
+        whs = str(self.review_df.at[r, "Whs"])
+        item = str(self.review_df.at[r, "Item"])
+        lot = str(self.review_df.at[r, "Batch/lot"])
+        loc = str(self.review_df.at[r, "Location"])
+        default_loc = str(self.review_df.at[r, "DefaultLocation"])
+
+        headline = str(self.review_df.at[r, "GroupHeadline"])
+        rec_type = str(self.review_df.at[r, "RecommendationType"])
+        reason = str(self.review_df.at[r, "Reason"])
+        remaining = self.review_df.at[r, "RemainingAdjustmentQty"]
+        conf = str(self.review_df.at[r, "Confidence"])
+        sev = str(self.review_df.at[r, "Severity"])
+
+        # group row lookup
+        gmatch = self.group_df[
+            (self.group_df["Whs"] == whs) &
+            (self.group_df["Item"] == item) &
+            (self.group_df["Batch/lot"] == lot)
+        ]
+        if not gmatch.empty:
+            g = gmatch.iloc[0].to_dict()
+            sys_total = g.get("SystemTotal", "")
+            count_total = g.get("CountTotal", "")
+            net_var = g.get("NetVariance", "")
+            st01 = g.get("SysST01", "")
+            def_after = g.get("DefaultSystemAfter", "")
+            def_count = g.get("DefaultCount", "")
+            flags = g.get("Flags", "")
+        else:
+            sys_total = count_total = net_var = st01 = def_after = def_count = flags = ""
+
+        # transfer lines for this group
+        transfer_text = ""
+        if self.transfers_df is not None and not self.transfers_df.empty:
+            t = self.transfers_df[
+                (self.transfers_df["Whs"] == whs) &
+                (self.transfers_df["Item"] == item) &
+                (self.transfers_df["Batch/lot"] == lot)
+            ]
+            if not t.empty:
+                lines = []
+                for _, tr in t.iterrows():
+                    lines.append(f"- {tr['Qty']} : {tr['FromLocation']} → {tr['ToLocation']}")
+                transfer_text = "\n".join(lines)
+
+        self.details.setText(
+            f"Group: {whs} | {item} | {lot}\n"
+            f"Selected Location: {loc}\n"
+            f"Default: {default_loc}\n\n"
+            f"Headline: {headline}\n"
+            f"RecommendationType (row): {rec_type}\n"
+            f"RemainingAdjustmentQty (group): {remaining}\n"
+            f"Confidence: {conf} | Severity: {sev}\n\n"
+            f"Totals: System={sys_total}  Count={count_total}  NetVar={net_var}\n"
+            f"ST01(System)={st01}  DefaultAfterTransfers={def_after}  DefaultCount={def_count}\n"
+            f"Flags: {flags}\n\n"
+            f"Transfers:\n{transfer_text if transfer_text else '(none)'}\n\n"
+            f"Reason:\n{reason}"
+        )
+
+    def _set_filter_mode(self, mode: str) -> None:
+        self._filter_mode = mode
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        if self.review_df is None:
+            return
+
+        df = self.review_df.copy()
+
+        mode = getattr(self, "_filter_mode", "ALL")
+        if mode == "ACTIONS":
+            df = df[df["RecommendationType"].isin(["TRANSFER", "ADJUST", "INVESTIGATE"])]
+        elif mode == "SECURED":
+            # secured variance shows up as headline or flags; easiest filter is Location Type + Variance
+            if "Location Type" in df.columns:
+                df = df[(df["Location Type"].astype(str).str.lower() == "secured") & (df["VarianceQty"] != 0)]
+        elif mode == "INVESTIGATE":
+            df = df[df["RecommendationType"] == "INVESTIGATE"]
+
+        q = self.filter_search.text().strip().lower()
+        if q:
+            cols = [c for c in ["Item", "Location", "Tag", "Description", "GroupHeadline"] if c in df.columns]
+            if cols:
+                mask = False
+                for c in cols:
+                    mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False)
+                df = df[mask]
+
+        # Re-render table (keeps notes editing)
+        self._set_table_from_df(df)
+
 
     # ---------- EXPORT ----------
     def _export_xlsx(self) -> None:
