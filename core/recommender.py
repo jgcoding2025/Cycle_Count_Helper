@@ -102,6 +102,34 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     for (whs, item, lot), g in df.groupby(gcols, sort=False):
         g = g.copy()
 
+        # ---- Warehouse guardrail ----
+        if str(whs).strip() != "50":
+            idx = g.index
+            df.loc[idx, "RecommendationType"] = "NO_ACTION"
+            df.loc[idx, "Reason"] = "Warehouse is not 50; this tool does not auto-recommend transfers/default updates outside WHS 50."
+            df.loc[idx, "Confidence"] = "High"
+            df.loc[idx, "Severity"] = 0
+            df.loc[idx, "GroupHeadline"] = "No action (non-WHS 50)"
+
+            group_rows.append({
+                "Whs": whs,
+                "Item": item,
+                "Batch/lot": lot,
+                "DefaultLocation": str(g["DefaultLocation"].dropna().astype(str).head(1).values[0]) if (g["DefaultLocation"] != "").any() else "",
+                "SystemTotal": float(g["SystemQty"].sum()),
+                "CountTotal": float(g["CountQty"].sum()),
+                "NetVariance": float(g["VarianceQty"].sum()),
+                "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
+                "DefaultSystemAfter": None,
+                "DefaultCount": None,
+                "Flags": "NonWHS50",
+                "RecommendationHeadline": "No action (non-WHS 50)",
+                "RemainingAdjustmentQty": 0.0,
+                "Confidence": "High",
+                "Severity": 0,
+            })
+            continue
+
         # Flags
         flags = {
             "missing_master": (g["Missing Location Master"] == "Y").any(),
