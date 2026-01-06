@@ -165,11 +165,15 @@ class MainWindow(QMainWindow):
         try:
             loc_df = load_warehouse_locations(self.paths.warehouse_locations_path)
             rec_df = load_recount_workbook(self.paths.recount_path)
-
             review_df = build_review_lines(sid, rec_df, loc_df)
 
             # Step 3: recommendations + transfer plan + group summary
             review_df, transfers_df, group_df = apply_recommendations(review_df)
+
+            original_columns = list(rec_df.columns) + [c for c in loc_df.columns if c not in rec_df.columns]
+            missing_columns = [c for c in original_columns if c not in review_df.columns]
+            if missing_columns:
+                raise ValueError(f"Columns lost while building review table: {missing_columns}")
 
             # Merge in persisted notes
             notes_map = self.notes_db.read_notes_for_session(sid)
@@ -193,44 +197,12 @@ class MainWindow(QMainWindow):
             self.transfers_df = transfers_df
             self.group_df = group_df
 
-            self._set_table_from_df(review_df)
-            self.btn_export.setEnabled(True)
-
-            self.status_label.setText(
-                f"Rows: {len(review_df):,} | Transfers: {len(transfers_df):,} | Groups: {len(group_df):,}"
-            )
-
         except Exception as e:
-            QMessageBox.critical(self, "Build failed", str(e))
-
-    # ---------- TABLE RENDER ----------
-    def _set_table_from_df(self, df: pd.DataFrame) -> None:
-        self._updating_table = True
-        try:
-            headers = list(df.columns)
-            self.table.setColumnCount(len(headers))
-            self.table.setRowCount(len(df))
-            self.table.setHorizontalHeaderLabels(headers)
-
-            self._notes_col = headers.index("UserNotes")
-
-            for r in range(len(df)):
-                for c, col in enumerate(headers):
-                    item = QTableWidgetItem(str(df.iat[r, c]) if pd.notna(df.iat[r, c]) else "")
-                    if c == self._notes_col:
-                        item.setFlags(item.flags() | Qt.ItemIsEditable)
-                    else:
-                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                    self.table.setItem(r, c, item)
-
-            self.table.resizeColumnsToContents()
-        finally:
-            self._updating_table = False
-
-    # ---------- NOTES SAVE ----------
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if self._updating_table or item.column() != self._notes_col:
+            self.btn_export.setEnabled(False)
+            QMessageBox.critical(self, "Load/Build Error", str(e))
             return
+
+        self._set_table_from_df(self.review_df)
 
         r = item.row()
         sid = self.session_id.text().strip()
@@ -243,9 +215,58 @@ class MainWindow(QMainWindow):
             str(self.review_df.at[r, "Location"]),
         )
 
-        ts = self.notes_db.upsert_note(key, item.text())
-        self.review_df.at[r, "UserNotes"] = item.text()
-        self.review_df.at[r, "NoteUpdatedAt"] = ts
+    def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
+        self.table.clear()
+        self.table.setColumnCount(len(headers))
+        self.table.setRowCount(len(rows))
+        self.table.setHorizontalHeaderLabels(headers)
+
+        for r, row in enumerate(rows):
+            for c, val in enumerate(row):
+                item = QTableWidgetItem(str(val))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r, c, item)
+
+        self.table.resizeColumnsToContents()
+
+    def _set_table_from_df(self, df: "pd.DataFrame") -> None:
+        import pandas as pd
+
+        self._updating_table = True
+        try:
+            headers = [str(c) for c in df.columns]
+            self.table.clear()
+            self.table.setColumnCount(len(headers))
+            self.table.setRowCount(len(df))
+            self.table.setHorizontalHeaderLabels(headers)
+
+            # Remember column index for UserNotes
+            self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
+
+            for r in range(len(df)):
+                row = df.iloc[r]
+                for c, col in enumerate(headers):
+                    val = row[col]
+                    if pd.isna(val):
+                        s = ""
+                    else:
+                        if isinstance(val, float) and val.is_integer():
+                            s = str(int(val))
+                        else:
+                            s = str(val)
+
+                    item = QTableWidgetItem(s)
+
+                    if c == self._col_usernotes:
+                        item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    else:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+
+                    self.table.setItem(r, c, item)
+
+            self.table.resizeColumnsToContents()
+        finally:
+            self._updating_table = False
 
     def _on_selection_changed(self) -> None:
         if self.review_df is None or self.group_df is None:
