@@ -57,22 +57,25 @@ class MainWindow(QMainWindow):
 
         # --- Top controls ---
         top = QWidget()
-        top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(0, 0, 0, 0)
+        self.top_layout = QHBoxLayout(top)
+        self.top_layout.setContentsMargins(0, 0, 0, 0)
 
         self.btn_load_locations = QPushButton("Load Warehouse Locations.xlsx")
         self.btn_load_recount = QPushButton("Load Recount Workbook.xlsx")
         self.btn_build_review = QPushButton("Build Review Table")
         self.btn_build_review.setEnabled(False)
+        self.btn_export = QPushButton("Export XLSX")
+        self.btn_export.setEnabled(False)
 
         self.session_id = QLineEdit()
         self.session_id.setPlaceholderText("SessionId (e.g., 20250113)")
 
-        top_layout.addWidget(self.btn_load_locations)
-        top_layout.addWidget(self.btn_load_recount)
-        top_layout.addWidget(QLabel("SessionId:"))
-        top_layout.addWidget(self.session_id, 1)
-        top_layout.addWidget(self.btn_build_review)
+        self.top_layout.addWidget(self.btn_load_locations)
+        self.top_layout.addWidget(self.btn_load_recount)
+        self.top_layout.addWidget(QLabel("SessionId:"))
+        self.top_layout.addWidget(self.session_id, 1)
+        self.top_layout.addWidget(self.btn_build_review)
+        self.top_layout.addWidget(self.btn_export)
 
         root_layout.addWidget(top)
 
@@ -115,6 +118,7 @@ class MainWindow(QMainWindow):
         self.btn_load_locations.clicked.connect(self._pick_locations_file)
         self.btn_load_recount.clicked.connect(self._pick_recount_file)
         self.btn_build_review.clicked.connect(self._build_review_placeholder)
+        self.btn_export.clicked.connect(self._export_xlsx)
 
     def _pick_locations_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -206,18 +210,11 @@ class MainWindow(QMainWindow):
             loc_df = load_warehouse_locations(self.paths.warehouse_locations_path)
             rec_df = load_recount_workbook(self.paths.recount_path)
             review_df = build_review_lines(sid, rec_df, loc_df)
-            
-            self.btn_export = QPushButton("Export XLSX")
-            self.btn_export.setEnabled(False)
-            top_layout.addWidget(self.btn_export)
-
-            self.btn_export.clicked.connect(self._export_xlsx)
-
 
             # Step 3: recommendations + transfer plan + group summary
             review_df, transfers_df, group_df = apply_recommendations(review_df)
 
-                # Merge in persisted notes
+            # Merge in persisted notes
             notes_map = self.notes_db.read_notes_for_session(sid)
 
             review_df["UserNotes"] = ""
@@ -241,15 +238,12 @@ class MainWindow(QMainWindow):
             self.transfers_df = transfers_df
             self.group_df = group_df
 
-            self.review_df: pd.DataFrame | None = None
-            self.transfers_df: pd.DataFrame | None = None
-            self.group_df: pd.DataFrame | None = None
-
         except Exception as e:
+            self.btn_export.setEnabled(False)
             QMessageBox.critical(self, "Load/Build Error", str(e))
             return
 
-        self._set_table_from_df(review_df)
+        self._set_table_from_df(self.review_df)
 
         adj_groups = 0 if self.group_df is None else int((self.group_df["RemainingAdjustmentQty"] != 0).sum())
         transfer_lines = 0 if self.transfers_df is None else len(self.transfers_df)
@@ -268,50 +262,49 @@ class MainWindow(QMainWindow):
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
                 item = QTableWidgetItem(str(val))
-                item.setFlags(item.flags() ^ Qt.ItemIsEditable)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(r, c, item)
 
         self.table.resizeColumnsToContents()
 
-        def _set_table_from_df(self, df: "pd.DataFrame") -> None:
-            import pandas as pd
+    def _set_table_from_df(self, df: "pd.DataFrame") -> None:
+        import pandas as pd
 
-            self._updating_table = True
-            try:
-                headers = [str(c) for c in df.columns]
-                self.table.clear()
-                self.table.setColumnCount(len(headers))
-                self.table.setRowCount(len(df))
-                self.table.setHorizontalHeaderLabels(headers)
+        self._updating_table = True
+        try:
+            headers = [str(c) for c in df.columns]
+            self.table.clear()
+            self.table.setColumnCount(len(headers))
+            self.table.setRowCount(len(df))
+            self.table.setHorizontalHeaderLabels(headers)
 
-                # Remember column index for UserNotes
-                self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
+            # Remember column index for UserNotes
+            self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
 
-                for r in range(len(df)):
-                    row = df.iloc[r]
-                    for c, col in enumerate(headers):
-                        val = row[col]
-                        if pd.isna(val):
-                            s = ""
+            for r in range(len(df)):
+                row = df.iloc[r]
+                for c, col in enumerate(headers):
+                    val = row[col]
+                    if pd.isna(val):
+                        s = ""
+                    else:
+                        if isinstance(val, float) and val.is_integer():
+                            s = str(int(val))
                         else:
-                            if isinstance(val, float) and val.is_integer():
-                                s = str(int(val))
-                            else:
-                                s = str(val)
+                            s = str(val)
 
-                        item = QTableWidgetItem(s)
+                    item = QTableWidgetItem(s)
 
-                        if c == self._col_usernotes:
-                            # editable notes
-                            item.setFlags(item.flags() | Qt.ItemIsEditable)
-                        else:
-                            item.setFlags(item.flags() ^ Qt.ItemIsEditable)
+                    if c == self._col_usernotes:
+                        item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    else:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
-                        self.table.setItem(r, c, item)
+                    self.table.setItem(r, c, item)
 
-                self.table.resizeColumnsToContents()
-            finally:
-                self._updating_table = False
+            self.table.resizeColumnsToContents()
+        finally:
+            self._updating_table = False
 
     def _export_xlsx(self) -> None:
         if self.review_df is None or self.group_df is None or self.transfers_df is None:
