@@ -230,7 +230,7 @@ class MainWindow(QMainWindow):
             "System Qty",
             "Counted Qty",
         ])
-        self.test_secondary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.test_secondary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.test_secondary_table.verticalHeader().setVisible(False)
         self.test_secondary_table.setCornerButtonEnabled(False)
         test_layout.addWidget(self.test_secondary_table)
@@ -572,7 +572,8 @@ class MainWindow(QMainWindow):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.test_results_table.setItem(r, c, item)
 
-        self.test_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.test_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.test_results_table.resizeColumnsToContents()
         self.test_results_table.resizeRowsToContents()
 
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
