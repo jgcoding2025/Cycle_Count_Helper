@@ -99,7 +99,6 @@ def load_recount_workbook(path: Path) -> pd.DataFrame:
         "Cur cost",
         "Count 1 entry on-hand qty",
         "Count Status",
-        "Notes",
     ]
 
     preferred = required + [c for c in optional if c in df.columns]

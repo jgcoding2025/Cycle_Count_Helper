@@ -872,7 +872,6 @@ class MainWindow(QMainWindow):
                     mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False)
                 df = df[mask]
 
-        # Re-render table (keeps notes editing)
         self._set_table_from_df(df)
 
     def _apply_row_visibility(self, df: pd.DataFrame) -> pd.DataFrame:
