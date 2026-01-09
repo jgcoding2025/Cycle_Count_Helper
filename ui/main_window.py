@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -22,6 +23,9 @@ from PySide6.QtWidgets import (
     QSplitter,
     QGroupBox,
     QFormLayout,
+    QMenuBar,
+    QMenu,
+    QTextEdit,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -35,6 +39,207 @@ from datetime import datetime
 class LoadedPaths:
     warehouse_locations_path: Path | None = None
     recount_path: Path | None = None
+
+
+class TestScenarioWindow(QMainWindow):
+    def __init__(self, parent: "MainWindow") -> None:
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle("Test Scenario")
+        self.resize(900, 700)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        root_layout = QVBoxLayout(root)
+
+        test_group = QGroupBox("Test Scenario")
+        test_layout = QVBoxLayout(test_group)
+
+        default_form = QFormLayout()
+        self.test_default_whs = QLineEdit()
+        self.test_default_loc = QLineEdit()
+        self.test_default_system = QLineEdit()
+        self.test_default_count = QLineEdit()
+        self.test_st01_system = QLineEdit()
+
+        self.test_default_whs.setPlaceholderText("Warehouse (e.g. 50)")
+        self.test_default_loc.setPlaceholderText("Default Location (A)")
+        self.test_default_system.setPlaceholderText("System Qty")
+        self.test_default_count.setPlaceholderText("Counted Qty")
+        self.test_st01_system.setPlaceholderText("System Qty for ST01")
+
+        default_form.addRow("Warehouse:", self.test_default_whs)
+        default_form.addRow("Default Location (A):", self.test_default_loc)
+        default_form.addRow("System Qty:", self.test_default_system)
+        default_form.addRow("Counted Qty:", self.test_default_count)
+        default_form.addRow("System Qty for ST01:", self.test_st01_system)
+
+        test_layout.addLayout(default_form)
+
+        secondary_label = QLabel("Secondary Locations (up to 5)")
+        test_layout.addWidget(secondary_label)
+
+        self.test_secondary_table = QTableWidget(5, 4)
+        self.test_secondary_table.setHorizontalHeaderLabels([
+            "Warehouse",
+            "Secondary Location (B+)",
+            "System Qty",
+            "Counted Qty",
+        ])
+        self.test_secondary_table.resizeColumnsToContents()
+        test_layout.addWidget(self.test_secondary_table)
+
+        controls_layout = QHBoxLayout()
+        self.btn_run_test = QPushButton("Run Test Scenario")
+        controls_layout.addWidget(self.btn_run_test)
+        controls_layout.addStretch(1)
+        test_layout.addLayout(controls_layout)
+
+        self.test_results_table = QTableWidget()
+        self.test_results_table.setSortingEnabled(True)
+        test_layout.addWidget(self.test_results_table)
+
+        root_layout.addWidget(test_group)
+
+        self.btn_run_test.clicked.connect(self._run_test_scenario)
+
+    def _build_test_recount_df(self) -> pd.DataFrame:
+        rows = []
+        whs = self.test_default_whs.text().strip()
+        default_loc = self.test_default_loc.text().strip().upper()
+        if not whs or not default_loc:
+            raise ValueError("Test Scenario requires Warehouse and Default Location (A).")
+
+        default_system = float(self.test_default_system.text().strip() or 0)
+        default_count = float(self.test_default_count.text().strip() or 0)
+
+        def _add_row(row_whs: str, loc: str, sys_qty: float, count_qty: float) -> None:
+            rows.append({
+                "Whs": row_whs,
+                "Item": "TEST_ITEM",
+                "Location": loc,
+                "Batch/lot": "",
+                "Item Rev Default Location": default_loc,
+                "Count 1 cutoff on-hand qty": sys_qty,
+                "Count 1 qty": count_qty,
+                "Count 1 variance qty": count_qty - sys_qty,
+            })
+
+        _add_row(whs, default_loc, default_system, default_count)
+
+        st01_value = self.test_st01_system.text().strip()
+        if st01_value:
+            st01_system = float(st01_value)
+            _add_row(whs, "ST01", st01_system, st01_system)
+
+        for r in range(self.test_secondary_table.rowCount()):
+            row_whs_item = self.test_secondary_table.item(r, 0)
+            loc_item = self.test_secondary_table.item(r, 1)
+            sys_item = self.test_secondary_table.item(r, 2)
+            count_item = self.test_secondary_table.item(r, 3)
+
+            row_whs = row_whs_item.text().strip() if row_whs_item else ""
+            loc = loc_item.text().strip().upper() if loc_item else ""
+            if not loc:
+                continue
+            if not row_whs:
+                row_whs = whs
+
+            sys_qty = float(sys_item.text().strip()) if sys_item and sys_item.text().strip() else 0
+            count_qty = float(count_item.text().strip()) if count_item and count_item.text().strip() else 0
+            _add_row(row_whs, loc, sys_qty, count_qty)
+
+        if not rows:
+            raise ValueError("Enter at least one default or secondary location row.")
+
+        return pd.DataFrame(rows)
+
+    def _run_test_scenario(self) -> None:
+        if not self.parent_window.paths.warehouse_locations_path:
+            QMessageBox.warning(self, "Missing Locations", "Load Warehouse Locations before running a test scenario.")
+            return
+
+        try:
+            loc_df = load_warehouse_locations(self.parent_window.paths.warehouse_locations_path)
+            rec_df = self._build_test_recount_df()
+            review_df = build_review_lines("TEST", rec_df, loc_df)
+            transfer_mode = "ADJUST" if self.parent_window.chk_use_adjustments.isChecked() else "TRANSFER"
+            review_df, _, _ = apply_recommendations(review_df, transfer_mode=transfer_mode)
+        except Exception as e:
+            QMessageBox.critical(self, "Test Scenario Error", str(e))
+            return
+
+        result_cols = [
+            "Location",
+            "SystemQty",
+            "CountQty",
+            "VarianceQty",
+            "RecommendationType",
+            "RecommendedQty",
+            "RemainingAdjustmentQty",
+            "GroupHeadline",
+            "Reason",
+        ]
+        available_cols = [c for c in result_cols if c in review_df.columns]
+        results = review_df[available_cols].copy()
+
+        self._set_test_table_from_df(results)
+
+    def _set_test_table_from_df(self, df: "pd.DataFrame") -> None:
+        headers = [str(c) for c in df.columns]
+        self.test_results_table.clear()
+        self.test_results_table.setColumnCount(len(headers))
+        self.test_results_table.setRowCount(len(df))
+        self.test_results_table.setHorizontalHeaderLabels(headers)
+
+        for r in range(len(df)):
+            row = df.iloc[r]
+            for c, col in enumerate(headers):
+                val = row[col]
+                if pd.isna(val):
+                    s = ""
+                else:
+                    if isinstance(val, float) and val.is_integer():
+                        s = str(int(val))
+                    else:
+                        s = str(val)
+                item = QTableWidgetItem(s)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.test_results_table.setItem(r, c, item)
+
+        self.test_results_table.resizeColumnsToContents()
+
+
+class BusinessRulesWindow(QMainWindow):
+    def __init__(self, parent: "MainWindow") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Recommendation Rules")
+        self.resize(700, 500)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+
+        rules_text = QTextEdit()
+        rules_text.setReadOnly(True)
+        rules_text.setPlainText(
+            "Recommendation logic summary\n"
+            "- Grouped by Warehouse + Item + Batch/lot; defaults and secondaries are evaluated together.\n"
+            "- Warehouse 50 only: other warehouses are marked NO_ACTION with a guardrail note.\n"
+            "- Default location must exist in recount lines; missing default or missing master -> INVESTIGATE.\n"
+            "- Secondary locations must reconcile exactly to system; variances generate TRANSFER or ADJUST actions.\n"
+            "- Secured locations with variance are flagged and reduce confidence.\n"
+            "- Default rules:\n"
+            "  * If Default Count = 0 and default is unsecured+available with ST01 system qty > 0, no default-empty issue.\n"
+            "  * Otherwise default empty -> INVESTIGATE (update default or move material).\n"
+            "  * If default is unsecured+available and count > 0, enforce ST01 min/max:\n"
+            "    MIN = default-after-transfers, MAX = default-after-transfers + ST01 system.\n"
+            "  * Non-eligible defaults compare directly to system-after-transfers.\n"
+            "- Transfer vs Adjust toggle:\n"
+            "  * Transfers mode outputs explicit From/To moves.\n"
+            "  * Adjust mode outputs balancing adjustments at the secondary and default locations instead.\n"
+        )
+        layout.addWidget(rules_text)
 
 
 class MainWindow(QMainWindow):
@@ -191,6 +396,9 @@ class MainWindow(QMainWindow):
         self._updating_table = False    
         self._load_saved_locations_if_available()
         self._update_ready_state()
+        self._setup_menu()
+        self._test_window: TestScenarioWindow | None = None
+        self._rules_window: BusinessRulesWindow | None = None
 
     # ---------- FILE PICKERS ----------
     def _pick_locations(self) -> None:
@@ -219,6 +427,34 @@ class MainWindow(QMainWindow):
             locations_state = f"ready ({self.paths.warehouse_locations_path.name})"
         recount_state = "loaded" if self.paths.recount_path else "missing"
         self.status_label.setText(f"Warehouse Locations: {locations_state} | Recount: {recount_state}")
+
+    def _setup_menu(self) -> None:
+        menubar = QMenuBar(self)
+        tools_menu = QMenu("Tools", self)
+
+        action_test = QAction("Open Test Scenario", self)
+        action_rules = QAction("View Business Rules", self)
+        action_test.triggered.connect(self._open_test_window)
+        action_rules.triggered.connect(self._open_rules_window)
+
+        tools_menu.addAction(action_test)
+        tools_menu.addAction(action_rules)
+        menubar.addMenu(tools_menu)
+        self.setMenuBar(menubar)
+
+    def _open_test_window(self) -> None:
+        if self._test_window is None:
+            self._test_window = TestScenarioWindow(self)
+        self._test_window.show()
+        self._test_window.raise_()
+        self._test_window.activateWindow()
+
+    def _open_rules_window(self) -> None:
+        if self._rules_window is None:
+            self._rules_window = BusinessRulesWindow(self)
+        self._rules_window.show()
+        self._rules_window.raise_()
+        self._rules_window.activateWindow()
 
     def _load_saved_locations_if_available(self) -> None:
         if self.locations_cache_path.exists():
