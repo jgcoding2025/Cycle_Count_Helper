@@ -78,6 +78,12 @@ class MainWindow(QMainWindow):
         self.rules_text.setReadOnly(True)
         reference_layout.addWidget(self.rules_text)
 
+        settings_tab = QWidget()
+        tabs.addTab(settings_tab, "Settings")
+        settings_layout = QVBoxLayout(settings_tab)
+        settings_group = QGroupBox("Preferences")
+        settings_group_layout = QVBoxLayout(settings_group)
+
         # ---------- TOP CONTROLS ----------
         top = QWidget()
         self.top_layout = QHBoxLayout(top)
@@ -101,12 +107,15 @@ class MainWindow(QMainWindow):
         self.top_layout.addWidget(self.btn_load_recount)
         self.top_layout.addWidget(QLabel("SessionId:"))
         self.top_layout.addWidget(self.session_id, 1)
-        self.top_layout.addWidget(self.chk_recommend_transfers)
-        self.top_layout.addWidget(self.chk_dark_mode)
         self.top_layout.addWidget(self.btn_build_review)
         self.top_layout.addWidget(self.btn_export)
 
         root_layout.addWidget(top)
+
+        settings_group_layout.addWidget(self.chk_recommend_transfers)
+        settings_group_layout.addWidget(self.chk_dark_mode)
+        settings_layout.addWidget(settings_group)
+        settings_layout.addStretch(1)
 
         filters = QWidget()
         filters_layout = QHBoxLayout(filters)
