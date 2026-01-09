@@ -33,6 +33,12 @@ def build_review_lines(
     merged["CountQty"] = merged["Count 1 qty"]
     merged["VarianceQty"] = merged["Count 1 variance qty"]
     merged["DefaultLocation"] = merged["Item Rev Default Location"]
+    if "Cur cost" in merged.columns:
+        merged["Total $ Variance"] = pd.to_numeric(merged["Cur cost"], errors="coerce") * pd.to_numeric(
+            merged["VarianceQty"], errors="coerce"
+        )
+    else:
+        merged["Total $ Variance"] = pd.NA
 
     preferred = [
         "SessionId",
@@ -44,6 +50,7 @@ def build_review_lines(
         "SystemQty",
         "CountQty",
         "VarianceQty",
+        "Total $ Variance",
         "Location Type",
         "Allocation Category",
         "Missing Location Master",
