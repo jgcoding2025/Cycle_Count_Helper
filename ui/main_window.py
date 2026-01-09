@@ -38,7 +38,6 @@ from PySide6.QtWidgets import (
 from core.io_excel import load_warehouse_locations, load_recount_workbook
 from core.review_builder import build_review_lines
 from core.recommender import apply_recommendations
-from core.notes_db import NotesDB, NoteKey
 from core.exporter import export_workbook
 from datetime import datetime
 
@@ -65,7 +64,6 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("CycleCountAssistant", "CycleCountAssistant")
         self._hidden_columns = self._load_hidden_columns()
 
-        self.notes_db = NotesDB(Path("data") / "cyclecount_notes.db")
 
         base_font = QFont()
         base_font.setPointSize(12)
@@ -286,7 +284,6 @@ class MainWindow(QMainWindow):
         self.btn_export.clicked.connect(self._export_xlsx)
         self.btn_run_test.clicked.connect(self._run_test_scenario)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        self.table.itemChanged.connect(self._on_item_changed)
         self.chk_dark_mode.stateChanged.connect(self._toggle_theme)
         self.btn_view_locations.clicked.connect(self._show_loaded_locations)
 
@@ -424,24 +421,6 @@ class MainWindow(QMainWindow):
             missing_columns = [c for c in original_columns if c not in review_df.columns]
             if missing_columns:
                 raise ValueError(f"Columns lost while building review table: {missing_columns}")
-
-            # Merge in persisted notes
-            notes = self.notes_db.read_notes_for_session(sid)
-
-            review_df["UserNotes"] = ""
-            review_df["NoteUpdatedAt"] = ""
-
-            for i in range(len(review_df)):
-                whs = str(review_df.at[i, "Whs"])
-                item_code = str(review_df.at[i, "Item"])
-                lot = str(review_df.at[i, "Batch/lot"])
-                loc = str(review_df.at[i, "Location"])
-                key = NoteKey(sid, whs, item_code, lot, loc)
-                if key in notes:
-                    note_text, updated = notes[key]
-                    review_df.at[i, "UserNotes"] = note_text
-                    review_df.at[i, "NoteUpdatedAt"] = updated
-
 
             self.review_df = review_df
             self.transfers_df = transfers_df
@@ -591,9 +570,6 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(len(df))
             self.table.setHorizontalHeaderLabels(display_headers)
 
-            # Remember column index for UserNotes
-            self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
-
             for r in range(len(df)):
                 row = df.iloc[r]
                 for c, col in enumerate(headers):
@@ -608,10 +584,7 @@ class MainWindow(QMainWindow):
 
                     item = QTableWidgetItem(s)
 
-                    if c == self._col_usernotes:
-                        item.setFlags(item.flags() | Qt.ItemIsEditable)
-                    else:
-                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
                     self.table.setItem(r, c, item)
 
@@ -882,36 +855,6 @@ class MainWindow(QMainWindow):
             f"Flags: {flags}\n\n"
             f"Reason:\n{reason}"
         )
-
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        # prevent recursion when we are programmatically populating the table
-        if getattr(self, "_updating_table", False):
-            return
-        if self.review_df is None:
-            return
-        if getattr(self, "_col_usernotes", -1) < 0:
-            return
-        if item.column() != self._col_usernotes:
-            return
-
-        r = item.row()
-        sid = self.session_id.text().strip()
-
-        whs = str(self.review_df.at[r, "Whs"])
-        part = str(self.review_df.at[r, "Item"])
-        lot = str(self.review_df.at[r, "Batch/lot"])
-        loc = str(self.review_df.at[r, "Location"])
-
-        note_text = item.text()
-        # persist
-        key = NoteKey(sid, whs, part, lot, loc)
-        updated = self.notes_db.upsert_note(key, note_text)
-
-        # update dataframe
-        self.review_df.at[r, "UserNotes"] = note_text
-        if "NoteUpdatedAt" in self.review_df.columns:
-            self.review_df.at[r, "NoteUpdatedAt"] = updated
-
 
     def _apply_filters(self) -> None:
         if self.review_df is None:
