@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QSizePolicy,
     QScrollArea,
+    QComboBox,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -51,8 +52,9 @@ class FilterHeader(QHeaderView):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(Qt.Horizontal, parent)
-        self._filters: list[QLineEdit] = []
+        self._filters: list[QComboBox] = []
         self._filter_height = 24
+        self._all_label = "(All)"
         self.sectionResized.connect(self._position_filters)
         self.sectionMoved.connect(self._position_filters)
         self.geometriesChanged.connect(self._position_filters)
@@ -70,15 +72,45 @@ class FilterHeader(QHeaderView):
             editor.deleteLater()
         self._filters = []
         for i in range(count):
-            editor = QLineEdit(self)
-            editor.setPlaceholderText(placeholders[i])
-            editor.textChanged.connect(lambda text, idx=i: self.filterChanged.emit(idx, text))
+            editor = QComboBox(self)
+            editor.setEditable(True)
+            editor.setInsertPolicy(QComboBox.NoInsert)
+            editor.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+            editor.lineEdit().setPlaceholderText(placeholders[i])
+            editor.addItem(self._all_label)
+            editor.lineEdit().textEdited.connect(lambda text, idx=i: self._emit_filter_changed(idx))
+            editor.currentIndexChanged.connect(lambda _, idx=i: self._emit_filter_changed(idx))
             self._filters.append(editor)
         self._position_filters()
 
     def set_filter_placeholders(self, placeholders: list[str]) -> None:
         for editor, placeholder in zip(self._filters, placeholders):
-            editor.setPlaceholderText(placeholder)
+            editor.lineEdit().setPlaceholderText(placeholder)
+
+    def set_filter_options(self, options: list[list[str]]) -> None:
+        for editor, values in zip(self._filters, options):
+            current = editor.currentText()
+            editor.blockSignals(True)
+            editor.clear()
+            editor.addItem(self._all_label)
+            for value in values:
+                editor.addItem(value)
+            if current and current != self._all_label:
+                if current in values:
+                    editor.setCurrentText(current)
+                else:
+                    editor.setEditText(current)
+            else:
+                editor.setCurrentIndex(0)
+            editor.blockSignals(False)
+
+    def _emit_filter_changed(self, index: int) -> None:
+        if index >= len(self._filters):
+            return
+        text = self._filters[index].currentText().strip()
+        if text == self._all_label:
+            text = ""
+        self.filterChanged.emit(index, text)
 
     def _position_filters(self) -> None:
         base_height = super().sizeHint().height()
@@ -179,8 +211,8 @@ class MainWindow(QMainWindow):
         session_layout.addWidget(QLabel("Session ID:"))
         session_layout.addWidget(self.session_id, 1)
 
-        self.top_layout.addWidget(self.btn_load_recount)
         self.top_layout.addWidget(session_container, 1)
+        self.top_layout.addWidget(self.btn_load_recount)
         self.top_layout.addWidget(self.btn_build_review)
         self.top_layout.addWidget(self.btn_export)
 
@@ -200,23 +232,6 @@ class MainWindow(QMainWindow):
         settings_group_layout.addWidget(self.chk_recommend_transfers)
         settings_group_layout.addWidget(self.chk_dark_mode)
 
-        row_visibility_group = QGroupBox("Row Visibility")
-        row_visibility_layout = QVBoxLayout(row_visibility_group)
-        row_visibility_layout.setSpacing(6)
-        self.chk_show_adjust = QCheckBox("Show ADJUST rows")
-        self.chk_show_transfer = QCheckBox("Show TRANSFER rows")
-        self.chk_show_no_action = QCheckBox("Show NO_ACTION rows")
-        self.chk_show_investigate = QCheckBox("Show INVESTIGATE rows")
-        for checkbox in (
-            self.chk_show_adjust,
-            self.chk_show_transfer,
-            self.chk_show_no_action,
-            self.chk_show_investigate,
-        ):
-            checkbox.setChecked(True)
-            row_visibility_layout.addWidget(checkbox)
-
-        settings_group_layout.addWidget(row_visibility_group)
         settings_layout.addWidget(settings_group)
         settings_layout.addStretch(1)
 
@@ -363,10 +378,6 @@ class MainWindow(QMainWindow):
         self.btn_view_locations.clicked.connect(self._show_loaded_locations)
 
         self.filter_search.textChanged.connect(self._apply_filters)
-        self.chk_show_adjust.stateChanged.connect(self._refresh_tables)
-        self.chk_show_transfer.stateChanged.connect(self._refresh_tables)
-        self.chk_show_no_action.stateChanged.connect(self._refresh_tables)
-        self.chk_show_investigate.stateChanged.connect(self._refresh_tables)
         self._column_filters: dict[int, str] = {}
         self._table_headers: list[str] = []
         self._updating_table = False
@@ -736,6 +747,7 @@ class MainWindow(QMainWindow):
             self.table.resizeColumnsToContents()
             self._apply_column_visibility(headers)
             self._update_column_selector(headers)
+            self._update_header_filters(df)
         finally:
             self._updating_table = False
 
@@ -838,6 +850,17 @@ class MainWindow(QMainWindow):
             )
             self.status_label.setStyleSheet("font-weight: 600; color: #e2e8f0; padding: 4px;")
             self.details.setStyleSheet("color: #e2e8f0;")
+            self.test_secondary_table.setStyleSheet(
+                """
+                QTableWidget {
+                    gridline-color: #334155;
+                    border: 1px solid #334155;
+                }
+                QHeaderView::section {
+                    border: 1px solid #334155;
+                }
+                """
+            )
         else:
             self.setStyleSheet(
                 """
@@ -924,6 +947,17 @@ class MainWindow(QMainWindow):
             )
             self.status_label.setStyleSheet("font-weight: 600; color: #1f2933; padding: 4px;")
             self.details.setStyleSheet("color: #3e4c59;")
+            self.test_secondary_table.setStyleSheet(
+                """
+                QTableWidget {
+                    gridline-color: #c2cada;
+                    border: 1px solid #c2cada;
+                }
+                QHeaderView::section {
+                    border: 1px solid #c2cada;
+                }
+                """
+            )
 
     def _on_selection_changed(self) -> None:
         if self.review_df is None or self.group_df is None:
@@ -1058,33 +1092,30 @@ class MainWindow(QMainWindow):
         self._set_table_from_df(df)
 
     def _apply_row_visibility(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "RecommendationType" not in df.columns:
-            return df
-
-        allowed = set()
-        if self.chk_show_adjust.isChecked():
-            allowed.add("ADJUST")
-        if self.chk_show_transfer.isChecked():
-            allowed.add("TRANSFER")
-        if self.chk_show_no_action.isChecked():
-            allowed.add("NO_ACTION")
-        if self.chk_show_investigate.isChecked():
-            allowed.add("INVESTIGATE")
-
-        if not allowed:
-            return df.iloc[0:0]
-
-        return df[df["RecommendationType"].astype(str).isin(allowed)]
+        return df
 
     def _refresh_test_results(self) -> None:
         if self.test_results_df is None:
             return
-        filtered = self._apply_row_visibility(self.test_results_df.copy())
-        self._set_test_table_from_df(filtered)
+        self._set_test_table_from_df(self.test_results_df.copy())
 
     def _refresh_tables(self) -> None:
         self._apply_filters()
         self._refresh_test_results()
+
+    def _update_header_filters(self, df: pd.DataFrame) -> None:
+        if self.table_header.filter_count() == 0:
+            return
+        source_df = self.review_df if self.review_df is not None else df
+        options: list[list[str]] = []
+        for col in self._table_headers:
+            if col not in source_df.columns:
+                options.append([])
+                continue
+            series = source_df[col].dropna().astype(str)
+            unique_values = sorted(set(series.tolist()))
+            options.append(unique_values)
+        self.table_header.set_filter_options(options)
 
     def _load_hidden_columns(self) -> set[str]:
         stored = self.settings.value("hidden_columns", [])
