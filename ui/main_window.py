@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QTextEdit,
     QTabWidget,
+    QDialog,
+    QHeaderView,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -55,8 +57,13 @@ class MainWindow(QMainWindow):
         self.transfers_df: pd.DataFrame | None = None
         self.group_df: pd.DataFrame | None = None
         self.locations_cache_path = Path("data") / "warehouse_locations_saved.xlsx"
+        self.locations_loaded_at: datetime | None = None
 
         self.notes_db = NotesDB(Path("data") / "cyclecount_notes.db")
+
+        base_font = QFont()
+        base_font.setPointSize(12)
+        self.setFont(base_font)
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
@@ -83,6 +90,10 @@ class MainWindow(QMainWindow):
         settings_layout = QVBoxLayout(settings_tab)
         settings_group = QGroupBox("Preferences")
         settings_group_layout = QVBoxLayout(settings_group)
+        settings_group_layout.setSpacing(12)
+
+        locations_group = QGroupBox("Warehouse Locations")
+        locations_layout = QVBoxLayout(locations_group)
 
         # ---------- TOP CONTROLS ----------
         top = QWidget()
@@ -103,7 +114,6 @@ class MainWindow(QMainWindow):
         self.session_id.setText(datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.session_id.setFixedWidth(170)
 
-        self.top_layout.addWidget(self.btn_load_locations)
         self.top_layout.addWidget(self.btn_load_recount)
         self.top_layout.addWidget(QLabel("SessionId:"))
         self.top_layout.addWidget(self.session_id, 1)
@@ -112,6 +122,17 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(top)
 
+        self.btn_view_locations = QPushButton("View Loaded Warehouse Locations")
+        self.btn_view_locations.setEnabled(False)
+
+        self.status_label = QLabel("Load both files to begin.")
+        self.status_label.setStyleSheet("font-weight: 600; color: #1f2933; padding: 4px;")
+
+        locations_layout.addWidget(self.btn_load_locations)
+        locations_layout.addWidget(self.btn_view_locations)
+        locations_layout.addWidget(self.status_label)
+
+        settings_group_layout.addWidget(locations_group)
         settings_group_layout.addWidget(self.chk_recommend_transfers)
         settings_group_layout.addWidget(self.chk_dark_mode)
         settings_layout.addWidget(settings_group)
@@ -136,11 +157,6 @@ class MainWindow(QMainWindow):
         filters_layout.addWidget(self.btn_show_investigate)
 
         root_layout.addWidget(filters)
-
-        # ---------- STATUS ----------
-        self.status_label = QLabel("Load both files to begin.")
-        self.status_label.setStyleSheet("font-weight: 600; color: #1f2933; padding: 4px;")
-        root_layout.addWidget(self.status_label)
 
         # ---------- TABLE ----------
         splitter = QSplitter(Qt.Horizontal)
@@ -197,7 +213,9 @@ class MainWindow(QMainWindow):
             "System Qty",
             "Counted Qty",
         ])
-        self.test_secondary_table.resizeColumnsToContents()
+        self.test_secondary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.test_secondary_table.verticalHeader().setVisible(False)
+        self.test_secondary_table.setCornerButtonEnabled(False)
         test_layout.addWidget(self.test_secondary_table)
 
         controls_layout = QHBoxLayout()
@@ -209,6 +227,8 @@ class MainWindow(QMainWindow):
         self.test_results_table = QTableWidget()
         self.test_results_table.setSortingEnabled(True)
         self.test_results_table.setAlternatingRowColors(True)
+        self.test_results_table.verticalHeader().setVisible(False)
+        self.test_results_table.setCornerButtonEnabled(False)
         test_layout.addWidget(self.test_results_table)
 
         test_layout_root.addWidget(test_group)
@@ -222,6 +242,7 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
         self.chk_dark_mode.stateChanged.connect(self._toggle_theme)
+        self.btn_view_locations.clicked.connect(self._show_loaded_locations)
 
         self.filter_search.textChanged.connect(self._apply_filters)
         self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
@@ -258,6 +279,7 @@ class MainWindow(QMainWindow):
     def _update_ready_state(self) -> None:
         ready = self.paths.warehouse_locations_path and self.paths.recount_path
         self.btn_build_review.setEnabled(bool(ready))
+        self.btn_view_locations.setEnabled(self.paths.warehouse_locations_path is not None)
         locations_state = "Loaded" if self.paths.warehouse_locations_path else "Missing"
         recount_state = "Loaded" if self.paths.recount_path else "Missing"
         self.status_label.setText(f"Warehouse Locations: {locations_state} | Count Sheet: {recount_state}")
@@ -266,6 +288,7 @@ class MainWindow(QMainWindow):
         if self.locations_cache_path.exists():
             self.paths.warehouse_locations_path = self.locations_cache_path
             self.btn_load_locations.setText("Replace Warehouse Locations.xlsx")
+            self.locations_loaded_at = datetime.fromtimestamp(self.locations_cache_path.stat().st_mtime)
 
     def _save_locations_to_cache(self, source_path: Path) -> None:
         self.locations_cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,6 +296,52 @@ class MainWindow(QMainWindow):
             return
         self.locations_cache_path.write_bytes(source_path.read_bytes())
         self.btn_load_locations.setText("Replace Warehouse Locations.xlsx")
+        self.locations_loaded_at = datetime.now()
+
+    def _show_loaded_locations(self) -> None:
+        if not self.paths.warehouse_locations_path:
+            QMessageBox.warning(self, "No Locations Loaded", "Load Warehouse Locations before viewing.")
+            return
+
+        try:
+            loc_df = load_warehouse_locations(self.paths.warehouse_locations_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", str(e))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Loaded Warehouse Locations")
+        dialog.resize(900, 600)
+        dialog_layout = QVBoxLayout(dialog)
+
+        loaded_at = self.locations_loaded_at
+        if loaded_at is None and self.locations_cache_path.exists():
+            loaded_at = datetime.fromtimestamp(self.locations_cache_path.stat().st_mtime)
+        loaded_label = QLabel(
+            f"Last loaded: {loaded_at.strftime('%Y-%m-%d %H:%M:%S') if loaded_at else 'Unknown'}"
+        )
+        dialog_layout.addWidget(loaded_label)
+
+        table = QTableWidget()
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.setCornerButtonEnabled(False)
+        headers = [str(c) for c in loc_df.columns]
+        table.setColumnCount(len(headers))
+        table.setRowCount(len(loc_df))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        for r in range(len(loc_df)):
+            row = loc_df.iloc[r]
+            for c, col in enumerate(headers):
+                val = row[col]
+                item = QTableWidgetItem("" if pd.isna(val) else str(val))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                table.setItem(r, c, item)
+
+        dialog_layout.addWidget(table, 1)
+        dialog.exec()
 
     def _bind_transfer_preference_controls(self) -> None:
         self.chk_recommend_transfers.stateChanged.connect(
@@ -484,7 +553,7 @@ class MainWindow(QMainWindow):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.test_results_table.setItem(r, c, item)
 
-        self.test_results_table.resizeColumnsToContents()
+        self.test_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
         display_headers = [self._format_header(c) for c in headers]
@@ -553,9 +622,6 @@ class MainWindow(QMainWindow):
         self._apply_ui_theme()
 
     def _apply_ui_theme(self) -> None:
-        base_font = QFont()
-        base_font.setPointSize(12)
-        self.setFont(base_font)
         if self._dark_mode_enabled:
             self.setStyleSheet(
                 """
@@ -566,15 +632,16 @@ class MainWindow(QMainWindow):
                     border: 0;
                 }
                 QTabBar::tab {
-                    background-color: #1f2937;
-                    padding: 8px 16px;
-                    margin-right: 6px;
-                    border-radius: 10px;
+                    background-color: transparent;
+                    padding: 8px 4px;
+                    margin-right: 16px;
+                    border: 0;
+                    border-bottom: 2px solid transparent;
                     font-weight: 600;
                 }
                 QTabBar::tab:selected {
-                    background-color: #60a5fa;
-                    color: #0b1220;
+                    color: #93c5fd;
+                    border-bottom: 2px solid #60a5fa;
                 }
                 QSplitter::handle {
                     background: transparent;
@@ -612,6 +679,10 @@ class MainWindow(QMainWindow):
                     border: 1px solid #334155;
                     font-weight: 600;
                 }
+                QTableCornerButton::section {
+                    background: #1f2937;
+                    border: 1px solid #334155;
+                }
                 QPushButton {
                     background-color: #60a5fa;
                     color: #0b1220;
@@ -643,15 +714,16 @@ class MainWindow(QMainWindow):
                     border: 0;
                 }
                 QTabBar::tab {
-                    background-color: #e2e8f0;
-                    padding: 8px 16px;
-                    margin-right: 6px;
-                    border-radius: 10px;
+                    background-color: transparent;
+                    padding: 8px 4px;
+                    margin-right: 16px;
+                    border: 0;
+                    border-bottom: 2px solid transparent;
                     font-weight: 600;
                 }
                 QTabBar::tab:selected {
-                    background-color: #2f5bff;
-                    color: #ffffff;
+                    color: #1d4ed8;
+                    border-bottom: 2px solid #2f5bff;
                 }
                 QSplitter::handle {
                     background: transparent;
@@ -687,6 +759,10 @@ class MainWindow(QMainWindow):
                     padding: 6px;
                     border: 1px solid #d6dbe8;
                     font-weight: 600;
+                }
+                QTableCornerButton::section {
+                    background: #e9edf7;
+                    border: 1px solid #d6dbe8;
                 }
                 QPushButton {
                     background-color: #2f5bff;
