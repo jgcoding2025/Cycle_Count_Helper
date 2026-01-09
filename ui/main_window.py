@@ -10,7 +10,7 @@ import re
 import pandas as pd
 
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QGuiApplication, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -55,7 +55,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Cycle Count Assistant")
         self.resize(1300, 800)
-        self._dark_mode_enabled = False
+        self._dark_mode_enabled = self._detect_system_dark_mode()
 
         self.paths = LoadedPaths()
         self.review_df: pd.DataFrame | None = None
@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
         self.btn_export = QPushButton("Export XLSX")
         self.btn_export.setEnabled(False)
         self.chk_dark_mode = QCheckBox("Dark Mode")
-        self.chk_dark_mode.setObjectName("darkModeCheckbox")
+        self.chk_dark_mode.setChecked(self._dark_mode_enabled)
 
         self.session_id = QLineEdit()
         self.session_id.setPlaceholderText("SessionId (e.g. 20260106)")
@@ -626,6 +626,16 @@ class MainWindow(QMainWindow):
         self._dark_mode_enabled = self.chk_dark_mode.isChecked()
         self._apply_ui_theme()
 
+    def _detect_system_dark_mode(self) -> bool:
+        app = QGuiApplication.instance()
+        if app is None:
+            return False
+        hints = app.styleHints()
+        if hasattr(hints, "colorScheme"):
+            return hints.colorScheme() == Qt.ColorScheme.Dark
+        palette = app.palette()
+        return palette.color(QPalette.Window).value() < 128
+
     def _apply_ui_theme(self) -> None:
         if self._dark_mode_enabled:
             self.setStyleSheet(
@@ -667,7 +677,7 @@ class MainWindow(QMainWindow):
                     left: 12px;
                     padding: 0 6px;
                 }
-                QLineEdit, QTextEdit, QTableWidget {
+                QLineEdit, QTextEdit, QTableWidget, QListWidget {
                     background: #111827;
                     border: 1px solid #334155;
                     border-radius: 8px;
@@ -682,6 +692,9 @@ class MainWindow(QMainWindow):
                 QTableWidget {
                     gridline-color: #334155;
                     alternate-background-color: #1f2937;
+                }
+                QListWidget::item:selected {
+                    background: #1f2937;
                 }
                 QHeaderView::section {
                     background-color: #374151;
@@ -774,11 +787,12 @@ class MainWindow(QMainWindow):
                     left: 12px;
                     padding: 0 6px;
                 }
-                QLineEdit, QTextEdit, QTableWidget {
+                QLineEdit, QTextEdit, QTableWidget, QListWidget {
                     background: #ffffff;
                     border: 1px solid #d6dbe8;
                     border-radius: 8px;
                     padding: 6px;
+                    color: #1f2933;
                 }
                 QScrollArea, QScrollArea QWidget {
                     background: #ffffff;
@@ -788,6 +802,9 @@ class MainWindow(QMainWindow):
                 QTableWidget {
                     gridline-color: #e5e9f2;
                     alternate-background-color: #f8faff;
+                }
+                QListWidget::item:selected {
+                    background: #e9edf7;
                 }
                 QHeaderView::section {
                     background-color: #e9edf7;
