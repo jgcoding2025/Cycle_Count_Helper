@@ -524,10 +524,8 @@ class MainWindow(QMainWindow):
             "Location",
             "SystemQty",
             "CountQty",
-            "VarianceQty",
             "RecommendationType",
-            "RecommendedQty",
-            "RemainingAdjustmentQty",
+            "SetLocationQtyTo",
             "GroupHeadline",
             "Reason",
         ]
