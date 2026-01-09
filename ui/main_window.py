@@ -83,11 +83,15 @@ class FilterHeader(QHeaderView):
     def _position_filters(self) -> None:
         base_height = super().sizeHint().height()
         for i, editor in enumerate(self._filters):
-            rect = self.sectionRect(i)
+            if self.isSectionHidden(i):
+                editor.hide()
+                continue
+            editor.show()
+            rect = self.sectionViewportPosition(i)
             editor.setGeometry(
-                rect.x() + 2,
+                rect + 2,
                 base_height + 2,
-                rect.width() - 4,
+                max(0, self.sectionSize(i) - 4),
                 self._filter_height,
             )
 
@@ -794,6 +798,11 @@ class MainWindow(QMainWindow):
                     padding: 6px;
                     color: #f9fafb;
                 }
+                QScrollArea, QScrollArea QWidget {
+                    background: #111827;
+                    border: 1px solid #334155;
+                    border-radius: 8px;
+                }
                 QTableWidget {
                     gridline-color: #334155;
                     alternate-background-color: #1f2937;
@@ -874,6 +883,11 @@ class MainWindow(QMainWindow):
                     border: 1px solid #d6dbe8;
                     border-radius: 8px;
                     padding: 6px;
+                }
+                QScrollArea, QScrollArea QWidget {
+                    background: #ffffff;
+                    border: 1px solid #d6dbe8;
+                    border-radius: 8px;
                 }
                 QTableWidget {
                     gridline-color: #e5e9f2;
