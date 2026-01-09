@@ -241,16 +241,14 @@ class MainWindow(QMainWindow):
         self.test_st01_system = QLineEdit()
 
         for field in (
+            self.test_default_whs,
+            self.test_default_loc,
             self.test_default_system,
             self.test_default_count,
             self.test_st01_system,
         ):
             field.setMaximumWidth(160)
             field.setMinimumWidth(100)
-
-        for field in (self.test_default_whs, self.test_default_loc):
-            field.setMinimumWidth(220)
-            field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.test_default_whs.setPlaceholderText("Warehouse")
         self.test_default_loc.setPlaceholderText("Default")
