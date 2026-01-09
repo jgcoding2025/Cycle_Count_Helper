@@ -53,7 +53,10 @@ def _group_headline(flags: dict, remaining_adj: float, has_transfers: bool) -> s
 
     return "No variance"
 
-def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def apply_recommendations(
+    review_lines: pd.DataFrame,
+    transfer_mode: str = "TRANSFER",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Input: Review_Lines dataframe from Step 2 (already enriched with Location Type / Allocation Category)
     Output:
@@ -93,6 +96,11 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     df["Confidence"] = "Med"
     df["Severity"] = 0
     df["GroupHeadline"] = ""
+
+    transfer_mode = str(transfer_mode).strip().upper() or "TRANSFER"
+    if transfer_mode not in {"TRANSFER", "ADJUST"}:
+        raise ValueError(f"Unsupported transfer_mode '{transfer_mode}'. Use TRANSFER or ADJUST.")
+    use_transfers = transfer_mode == "TRANSFER"
 
     transfers: list[TransferSuggestion] = []
     group_rows = []
@@ -238,20 +246,27 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
                 qty = float(delta)
                 transfers_out_default += qty
 
-                transfers.append(TransferSuggestion(
-                    whs=str(whs), item=str(item), batch_lot=str(lot),
-                    qty=qty, from_location=default_loc, to_location=loc,
-                    reason="Secondary location must be accurate; system short vs count.",
-                    confidence="Med" if flags["secured_variance"] else "High",
-                    severity=90,
-                ))
+                if use_transfers:
+                    transfers.append(TransferSuggestion(
+                        whs=str(whs), item=str(item), batch_lot=str(lot),
+                        qty=qty, from_location=default_loc, to_location=loc,
+                        reason="Secondary location must be accurate; system short vs count.",
+                        confidence="Med" if flags["secured_variance"] else "High",
+                        severity=90,
+                    ))
 
-                # Mark line recommendation
-                df.loc[ridx, "RecommendationType"] = "TRANSFER"
-                df.loc[ridx, "RecommendedQty"] = qty
-                df.loc[ridx, "FromLocation"] = default_loc
-                df.loc[ridx, "ToLocation"] = loc
-                df.loc[ridx, "Reason"] = "Secondary > system; transfer from default to reconcile."
+                    # Mark line recommendation
+                    df.loc[ridx, "RecommendationType"] = "TRANSFER"
+                    df.loc[ridx, "RecommendedQty"] = qty
+                    df.loc[ridx, "FromLocation"] = default_loc
+                    df.loc[ridx, "ToLocation"] = loc
+                    df.loc[ridx, "Reason"] = "Secondary > system; transfer from default to reconcile."
+                else:
+                    df.loc[ridx, "RecommendationType"] = "ADJUST"
+                    df.loc[ridx, "RecommendedQty"] = qty
+                    df.loc[ridx, "Reason"] = (
+                        "Secondary > system; adjust up here and adjust down at default (transfer alternative)."
+                    )
                 df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
                 df.loc[ridx, "Severity"] = 90
 
@@ -260,19 +275,26 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
                 qty = float(abs(delta))
                 transfers_in_default += qty
 
-                transfers.append(TransferSuggestion(
-                    whs=str(whs), item=str(item), batch_lot=str(lot),
-                    qty=qty, from_location=loc, to_location=default_loc,
-                    reason="Secondary location must be accurate; excess system qty moved out.",
-                    confidence="Med" if flags["secured_variance"] else "High",
-                    severity=90,
-                ))
+                if use_transfers:
+                    transfers.append(TransferSuggestion(
+                        whs=str(whs), item=str(item), batch_lot=str(lot),
+                        qty=qty, from_location=loc, to_location=default_loc,
+                        reason="Secondary location must be accurate; excess system qty moved out.",
+                        confidence="Med" if flags["secured_variance"] else "High",
+                        severity=90,
+                    ))
 
-                df.loc[ridx, "RecommendationType"] = "TRANSFER"
-                df.loc[ridx, "RecommendedQty"] = qty
-                df.loc[ridx, "FromLocation"] = loc
-                df.loc[ridx, "ToLocation"] = default_loc
-                df.loc[ridx, "Reason"] = "Secondary < system; transfer to default to reconcile."
+                    df.loc[ridx, "RecommendationType"] = "TRANSFER"
+                    df.loc[ridx, "RecommendedQty"] = qty
+                    df.loc[ridx, "FromLocation"] = loc
+                    df.loc[ridx, "ToLocation"] = default_loc
+                    df.loc[ridx, "Reason"] = "Secondary < system; transfer to default to reconcile."
+                else:
+                    df.loc[ridx, "RecommendationType"] = "ADJUST"
+                    df.loc[ridx, "RecommendedQty"] = qty
+                    df.loc[ridx, "Reason"] = (
+                        "Secondary < system; adjust down here and adjust up at default (transfer alternative)."
+                    )
                 df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
                 df.loc[ridx, "Severity"] = 90
 
@@ -305,9 +327,9 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
             group_conf = _confidence_cap(group_conf, "Med")
 
         if default_count == 0:
-        # NEW RULE:
-        # For unsecured+available defaults, if any qty exists in ST01, assume the default location may be physically full,
-        # so default showing empty is not an issue.
+            # NEW RULE:
+            # For unsecured+available defaults, if any qty exists in ST01, assume the default location may be physically full,
+            # so default showing empty is not an issue.
             if default_eligible and sys_st01 > 0:
                 default_reason_lines.append(
                     "Default count is 0, but SysST01 has inventory. Assume default may be physically full; no default-empty issue."
@@ -374,7 +396,7 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
             if remaining_adj != 0:
                 group_sev = max(group_sev, 80)
 
-            # Mark default row(s)
+        # Mark default row(s)
             for didx in default_rows.index:
                 if remaining_adj != 0:
                     df.loc[didx, "RecommendationType"] = "ADJUST"
@@ -387,11 +409,30 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
                     df.loc[didx, "RecommendationType"] = "NO_ACTION"
                     df.loc[didx, "Reason"] = " ".join(default_reason_lines)
                     df.loc[didx, "Confidence"] = group_conf
-                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 60 if len(transfers) > 0 else 0)
+                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 60 if (transfers_in_default or transfers_out_default) else 0)
+
+        if not use_transfers and not default_rows.empty:
+            transfer_adjust_default = default_after - default_system
+            total_default_adjust = transfer_adjust_default + remaining_adj
+            if total_default_adjust != 0 and (df.loc[default_rows.index, "RecommendationType"] != "INVESTIGATE").all():
+                direction = "up" if total_default_adjust > 0 else "down"
+                for didx in default_rows.index:
+                    existing_reason = str(df.loc[didx, "Reason"])
+                    transfer_reason = (
+                        f"Transfer alternative: adjust default {direction} {abs(total_default_adjust):g} "
+                        f"to offset secondary adjustments."
+                    )
+                    combined_reason = " ".join([existing_reason, transfer_reason]).strip()
+                    df.loc[didx, "RecommendationType"] = "ADJUST"
+                    df.loc[didx, "RecommendedQty"] = abs(total_default_adjust)
+                    df.loc[didx, "Reason"] = combined_reason
+                    df.loc[didx, "Confidence"] = group_conf
+                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], group_sev)
 
         has_transfers = any(t.whs == str(whs) and t.item == str(item) and t.batch_lot == str(lot) for t in transfers)
-        headline = _group_headline(flags, remaining_adj, has_transfers)
-        group_sev = max(group_sev, 60 if has_transfers else 0)
+        has_moves = has_transfers or bool(transfers_in_default or transfers_out_default)
+        headline = _group_headline(flags, remaining_adj, has_moves)
+        group_sev = max(group_sev, 60 if has_moves else 0)
 
         # Write group headline + remaining adjustment into all rows in group for easy filtering
         df.loc[g.index, "GroupHeadline"] = headline
@@ -417,7 +458,7 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
             "Severity": int(group_sev),
         })
 
-    transfers_df = pd.DataFrame([t.__dict__ for t in transfers])
+    transfers_df = pd.DataFrame([t.__dict__ for t in transfers]) if use_transfers else pd.DataFrame()
     if not transfers_df.empty:
         transfers_df = transfers_df.rename(
             columns={
