@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         self.session_id = QLineEdit()
         self.session_id.setPlaceholderText("SessionId (e.g. 20260106)")
         self.session_id.setText(datetime.now().strftime("%Y%m%d_%H%M%S"))
+        self.session_id.setFixedWidth(170)
 
         self.top_layout.addWidget(self.btn_load_locations)
         self.top_layout.addWidget(self.btn_load_recount)
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
 
         # ---------- TABLE ----------
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(1)
 
         self.table = QTableWidget()
         self.table.setSortingEnabled(True)
@@ -554,6 +556,20 @@ class MainWindow(QMainWindow):
                 QTabWidget::pane {
                     border: 0;
                 }
+                QTabBar::tab {
+                    background-color: #1f2937;
+                    padding: 8px 16px;
+                    margin-right: 6px;
+                    border-radius: 10px;
+                    font-weight: 600;
+                }
+                QTabBar::tab:selected {
+                    background-color: #60a5fa;
+                    color: #0b1220;
+                }
+                QSplitter::handle {
+                    background: transparent;
+                }
                 QWidget {
                     color: #f9fafb;
                 }
@@ -616,6 +632,20 @@ class MainWindow(QMainWindow):
                 }
                 QTabWidget::pane {
                     border: 0;
+                }
+                QTabBar::tab {
+                    background-color: #e2e8f0;
+                    padding: 8px 16px;
+                    margin-right: 6px;
+                    border-radius: 10px;
+                    font-weight: 600;
+                }
+                QTabBar::tab:selected {
+                    background-color: #2f5bff;
+                    color: #ffffff;
+                }
+                QSplitter::handle {
+                    background: transparent;
                 }
                 QWidget {
                     color: #1f2933;
