@@ -188,6 +188,15 @@ class MainWindow(QMainWindow):
         self.test_default_count = QLineEdit()
         self.test_st01_system = QLineEdit()
 
+        for field in (
+            self.test_default_whs,
+            self.test_default_system,
+            self.test_default_count,
+            self.test_st01_system,
+        ):
+            field.setMaximumWidth(160)
+            field.setMinimumWidth(100)
+
         self.test_default_whs.setPlaceholderText("Warehouse (e.g. 50)")
         self.test_default_loc.setPlaceholderText("Default Location (A)")
         self.test_default_system.setPlaceholderText("System Qty")
@@ -196,8 +205,12 @@ class MainWindow(QMainWindow):
 
         default_form.addRow("Warehouse:", self.test_default_whs)
         default_form.addRow("Default Location (A):", self.test_default_loc)
-        default_form.addRow("System Qty:", self.test_default_system)
-        default_form.addRow("Counted Qty:", self.test_default_count)
+        system_label = QLabel("System Qty:")
+        system_label.setStyleSheet("margin-left: 18px;")
+        count_label = QLabel("Counted Qty:")
+        count_label.setStyleSheet("margin-left: 18px;")
+        default_form.addRow(system_label, self.test_default_system)
+        default_form.addRow(count_label, self.test_default_count)
         default_form.addRow("System Qty for ST01:", self.test_st01_system)
         default_form.addRow("", self.chk_test_transfer_pref)
 
@@ -227,6 +240,8 @@ class MainWindow(QMainWindow):
         self.test_results_table = QTableWidget()
         self.test_results_table.setSortingEnabled(True)
         self.test_results_table.setAlternatingRowColors(True)
+        self.test_results_table.setWordWrap(True)
+        self.test_results_table.setTextElideMode(Qt.ElideNone)
         self.test_results_table.verticalHeader().setVisible(False)
         self.test_results_table.setCornerButtonEnabled(False)
         test_layout.addWidget(self.test_results_table)
@@ -378,23 +393,23 @@ class MainWindow(QMainWindow):
         )
         self.rules_text.setHtml(
             "<h3>Recommendation logic summary</h3>"
-            "<ul>"
+            "<ol>"
             "<li>Grouped by Warehouse + Item + Batch/lot; defaults and secondaries are evaluated together.</li>"
             "<li>Warehouse 50 only: other warehouses are marked NO_ACTION with a guardrail note.</li>"
             "<li>Default location must exist in recount lines; missing default or missing master triggers INVESTIGATE.</li>"
             "<li>Secondary locations must reconcile exactly to system; variances generate actions.</li>"
             "<li>Secured locations with variance are flagged and reduce confidence.</li>"
-            "<li>Default rules:"
-            "<ul>"
+            "<li><strong>Default rules:</strong>"
+            "<ol type=\"a\">"
             "<li>If Default Count = 0 and default is unsecured+available with ST01 system qty &gt; 0, no default-empty issue.</li>"
             "<li>Otherwise default empty → INVESTIGATE (update default or move material).</li>"
             "<li>If default is unsecured+available and count &gt; 0, enforce ST01 min/max: "
             "MIN = default-after-transfers, MAX = default-after-transfers + ST01 system.</li>"
             "<li>Non-eligible defaults compare directly to system-after-transfers.</li>"
-            "</ul>"
+            "</ol>"
             "</li>"
             f"{mode_line}"
-            "</ul>"
+            "</ol>"
         )
 
     # ---------- BUILD REVIEW ----------
@@ -554,6 +569,7 @@ class MainWindow(QMainWindow):
                 self.test_results_table.setItem(r, c, item)
 
         self.test_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.test_results_table.resizeRowsToContents()
 
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
         display_headers = [self._format_header(c) for c in headers]
