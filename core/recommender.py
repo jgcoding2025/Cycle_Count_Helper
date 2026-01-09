@@ -37,7 +37,7 @@ def _group_headline(flags: dict, remaining_adj: float, has_transfers: bool) -> s
     if flags.get("secured_variance"):
         return "Investigate: secured location variance"
     if flags.get("default_empty"):
-        return "Action needed: default empty (update default or move material)"
+        return "Action needed: default counted zero (verify on-hand)"
 
     if remaining_adj != 0:
         direction = "up" if remaining_adj > 0 else "down"
@@ -350,7 +350,7 @@ def apply_recommendations(
                 group_conf = _confidence_cap(group_conf, "Med")
 
                 default_reason_lines.append(
-                    "Default location count is 0; recommend updating default location or physically moving material to default."
+                    f"Default counted 0 with system {default_system:g}; verify on-hand and adjust down if empty."
                 )
                 # No min/max enforcement when default is empty; do not propose adjustment here.
                 remaining_adj = 0.0
@@ -358,7 +358,7 @@ def apply_recommendations(
                 # Mark default row(s)
                 for didx in default_rows.index:
                     df.loc[didx, "RecommendationType"] = "INVESTIGATE"
-                    df.loc[didx, "Reason"] = "Default empty; update default or move material. Transfers reconcile secondaries."
+                    df.loc[didx, "Reason"] = "Default counted 0 while system shows inventory; verify on-hand and adjust if empty."
                     df.loc[didx, "Confidence"] = group_conf
                     df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 85)
 

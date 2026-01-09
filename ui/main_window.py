@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import pandas as pd
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -44,6 +46,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Cycle Count Assistant")
         self.resize(1300, 800)
+        self._dark_mode_enabled = False
 
         self.paths = LoadedPaths()
         self.review_df: pd.DataFrame | None = None
@@ -79,12 +82,13 @@ class MainWindow(QMainWindow):
         self.top_layout.setContentsMargins(0, 0, 0, 0)
 
         self.btn_load_locations = QPushButton("Load Warehouse Locations.xlsx")
-        self.btn_load_recount = QPushButton("Load Recount Workbook.xlsx")
+        self.btn_load_recount = QPushButton("Load Count Sheet.xlsx")
         self.btn_build_review = QPushButton("Build Review Table")
         self.btn_build_review.setEnabled(False)
         self.btn_export = QPushButton("Export XLSX")
         self.btn_export.setEnabled(False)
         self.chk_recommend_transfers = QCheckBox("Recommend transfers prior to adjustments")
+        self.chk_dark_mode = QCheckBox("Dark Mode")
 
         self.session_id = QLineEdit()
         self.session_id.setPlaceholderText("SessionId (e.g. 20260106)")
@@ -95,6 +99,7 @@ class MainWindow(QMainWindow):
         self.top_layout.addWidget(QLabel("SessionId:"))
         self.top_layout.addWidget(self.session_id, 1)
         self.top_layout.addWidget(self.chk_recommend_transfers)
+        self.top_layout.addWidget(self.chk_dark_mode)
         self.top_layout.addWidget(self.btn_build_review)
         self.top_layout.addWidget(self.btn_export)
 
@@ -122,6 +127,7 @@ class MainWindow(QMainWindow):
 
         # ---------- STATUS ----------
         self.status_label = QLabel("Load both files to begin.")
+        self.status_label.setStyleSheet("font-weight: 600; color: #1f2933; padding: 4px;")
         root_layout.addWidget(self.status_label)
 
         # ---------- TABLE ----------
@@ -129,11 +135,12 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget()
         self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(True)
         splitter.addWidget(self.table)
 
         self.details = QLabel("Click a row to see group details.")
         self.details.setWordWrap(True)
-        self.details.setStyleSheet("color: #cccccc;")
+        self.details.setStyleSheet("color: #3e4c59;")
         splitter.addWidget(self.details)
 
         splitter.setStretchFactor(0, 3)
@@ -188,6 +195,7 @@ class MainWindow(QMainWindow):
 
         self.test_results_table = QTableWidget()
         self.test_results_table.setSortingEnabled(True)
+        self.test_results_table.setAlternatingRowColors(True)
         test_layout.addWidget(self.test_results_table)
 
         test_layout_root.addWidget(test_group)
@@ -200,6 +208,7 @@ class MainWindow(QMainWindow):
         self.btn_run_test.clicked.connect(self._run_test_scenario)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.chk_dark_mode.stateChanged.connect(self._toggle_theme)
 
         self.filter_search.textChanged.connect(self._apply_filters)
         self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
@@ -209,6 +218,7 @@ class MainWindow(QMainWindow):
 
         self._filter_mode = "ALL"
         self._updating_table = False
+        self._apply_ui_theme()
         self._load_saved_locations_if_available()
         self._update_ready_state()
         self._syncing_transfer_pref = False
@@ -225,7 +235,7 @@ class MainWindow(QMainWindow):
             self._update_ready_state()
 
     def _pick_recount(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select Recount File", "", "Excel (*.xlsx)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Count Sheet", "", "Excel (*.xlsx)")
         if path:
             self.paths.recount_path = Path(path)
             if not self.session_id.text().strip():
@@ -235,13 +245,9 @@ class MainWindow(QMainWindow):
     def _update_ready_state(self) -> None:
         ready = self.paths.warehouse_locations_path and self.paths.recount_path
         self.btn_build_review.setEnabled(bool(ready))
-        locations_state = "loaded"
-        if not self.paths.warehouse_locations_path:
-            locations_state = "missing"
-        else:
-            locations_state = f"ready ({self.paths.warehouse_locations_path.name})"
-        recount_state = "loaded" if self.paths.recount_path else "missing"
-        self.status_label.setText(f"Warehouse Locations: {locations_state} | Recount: {recount_state}")
+        locations_state = "Loaded" if self.paths.warehouse_locations_path else "Missing"
+        recount_state = "Loaded" if self.paths.recount_path else "Missing"
+        self.status_label.setText(f"Warehouse Locations: {locations_state} | Count Sheet: {recount_state}")
 
     def _load_saved_locations_if_available(self) -> None:
         if self.locations_cache_path.exists():
@@ -444,10 +450,11 @@ class MainWindow(QMainWindow):
 
     def _set_test_table_from_df(self, df: "pd.DataFrame") -> None:
         headers = [str(c) for c in df.columns]
+        display_headers = [self._format_header(c) for c in headers]
         self.test_results_table.clear()
         self.test_results_table.setColumnCount(len(headers))
         self.test_results_table.setRowCount(len(df))
-        self.test_results_table.setHorizontalHeaderLabels(headers)
+        self.test_results_table.setHorizontalHeaderLabels(display_headers)
 
         for r in range(len(df)):
             row = df.iloc[r]
@@ -467,10 +474,11 @@ class MainWindow(QMainWindow):
         self.test_results_table.resizeColumnsToContents()
 
     def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
+        display_headers = [self._format_header(c) for c in headers]
         self.table.clear()
         self.table.setColumnCount(len(headers))
         self.table.setRowCount(len(rows))
-        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setHorizontalHeaderLabels(display_headers)
 
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
@@ -486,10 +494,11 @@ class MainWindow(QMainWindow):
         self._updating_table = True
         try:
             headers = [str(c) for c in df.columns]
+            display_headers = [self._format_header(c) for c in headers]
             self.table.clear()
             self.table.setColumnCount(len(headers))
             self.table.setRowCount(len(df))
-            self.table.setHorizontalHeaderLabels(headers)
+            self.table.setHorizontalHeaderLabels(display_headers)
 
             # Remember column index for UserNotes
             self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
@@ -518,6 +527,147 @@ class MainWindow(QMainWindow):
             self.table.resizeColumnsToContents()
         finally:
             self._updating_table = False
+
+    def _format_header(self, header: str) -> str:
+        label = header.replace("_", " ")
+        label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", label)
+        words = label.split()
+        words = [word.capitalize() if word.islower() else word for word in words]
+        return " ".join(words)
+
+    def _toggle_theme(self) -> None:
+        self._dark_mode_enabled = self.chk_dark_mode.isChecked()
+        self._apply_ui_theme()
+
+    def _apply_ui_theme(self) -> None:
+        base_font = QFont()
+        base_font.setPointSize(12)
+        self.setFont(base_font)
+        if self._dark_mode_enabled:
+            self.setStyleSheet(
+                """
+                QMainWindow {
+                    background-color: #111827;
+                }
+                QTabWidget::pane {
+                    border: 0;
+                }
+                QWidget {
+                    color: #f9fafb;
+                }
+                QGroupBox {
+                    font-weight: 600;
+                    border: 1px solid #334155;
+                    border-radius: 10px;
+                    margin-top: 14px;
+                    padding: 10px;
+                    background: #1f2937;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 12px;
+                    padding: 0 6px;
+                }
+                QLineEdit, QTextEdit, QTableWidget {
+                    background: #111827;
+                    border: 1px solid #334155;
+                    border-radius: 8px;
+                    padding: 6px;
+                    color: #f9fafb;
+                }
+                QTableWidget {
+                    gridline-color: #334155;
+                    alternate-background-color: #1f2937;
+                }
+                QHeaderView::section {
+                    background-color: #374151;
+                    padding: 6px;
+                    border: 1px solid #334155;
+                    font-weight: 600;
+                }
+                QPushButton {
+                    background-color: #60a5fa;
+                    color: #0b1220;
+                    border-radius: 10px;
+                    padding: 8px 16px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #3b82f6;
+                }
+                QPushButton:disabled {
+                    background-color: #475569;
+                    color: #e2e8f0;
+                }
+                QCheckBox {
+                    spacing: 8px;
+                }
+                """
+            )
+            self.status_label.setStyleSheet("font-weight: 600; color: #e2e8f0; padding: 4px;")
+            self.details.setStyleSheet("color: #e2e8f0;")
+        else:
+            self.setStyleSheet(
+                """
+                QMainWindow {
+                    background-color: #f5f7fb;
+                }
+                QTabWidget::pane {
+                    border: 0;
+                }
+                QWidget {
+                    color: #1f2933;
+                }
+                QGroupBox {
+                    font-weight: 600;
+                    border: 1px solid #d6dbe8;
+                    border-radius: 10px;
+                    margin-top: 14px;
+                    padding: 10px;
+                    background: #ffffff;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 12px;
+                    padding: 0 6px;
+                }
+                QLineEdit, QTextEdit, QTableWidget {
+                    background: #ffffff;
+                    border: 1px solid #d6dbe8;
+                    border-radius: 8px;
+                    padding: 6px;
+                }
+                QTableWidget {
+                    gridline-color: #e5e9f2;
+                    alternate-background-color: #f8faff;
+                }
+                QHeaderView::section {
+                    background-color: #e9edf7;
+                    padding: 6px;
+                    border: 1px solid #d6dbe8;
+                    font-weight: 600;
+                }
+                QPushButton {
+                    background-color: #2f5bff;
+                    color: #ffffff;
+                    border-radius: 10px;
+                    padding: 8px 16px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #2448cc;
+                }
+                QPushButton:disabled {
+                    background-color: #a5b4ff;
+                    color: #f8faff;
+                }
+                QCheckBox {
+                    spacing: 8px;
+                }
+                """
+            )
+            self.status_label.setStyleSheet("font-weight: 600; color: #1f2933; padding: 4px;")
+            self.details.setStyleSheet("color: #3e4c59;")
 
     def _on_selection_changed(self) -> None:
         if self.review_df is None or self.group_df is None:
