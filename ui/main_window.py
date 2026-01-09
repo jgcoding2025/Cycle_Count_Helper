@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QMenu,
     QTextEdit,
+    QTabWidget,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -56,6 +57,8 @@ class TestScenarioWindow(QMainWindow):
         test_layout = QVBoxLayout(test_group)
 
         default_form = QFormLayout()
+        self.chk_use_adjustments = QCheckBox("Use adjustments instead of transfers")
+        self.chk_use_adjustments.setChecked(self.parent_window.chk_use_adjustments.isChecked())
         self.test_default_whs = QLineEdit()
         self.test_default_loc = QLineEdit()
         self.test_default_system = QLineEdit()
@@ -73,6 +76,7 @@ class TestScenarioWindow(QMainWindow):
         default_form.addRow("System Qty:", self.test_default_system)
         default_form.addRow("Counted Qty:", self.test_default_count)
         default_form.addRow("System Qty for ST01:", self.test_st01_system)
+        default_form.addRow("", self.chk_use_adjustments)
 
         test_layout.addLayout(default_form)
 
@@ -163,7 +167,7 @@ class TestScenarioWindow(QMainWindow):
             loc_df = load_warehouse_locations(self.parent_window.paths.warehouse_locations_path)
             rec_df = self._build_test_recount_df()
             review_df = build_review_lines("TEST", rec_df, loc_df)
-            transfer_mode = "ADJUST" if self.parent_window.chk_use_adjustments.isChecked() else "TRANSFER"
+            transfer_mode = "ADJUST" if self.chk_use_adjustments.isChecked() else "TRANSFER"
             review_df, _, _ = apply_recommendations(review_df, transfer_mode=transfer_mode)
         except Exception as e:
             QMessageBox.critical(self, "Test Scenario Error", str(e))
@@ -213,6 +217,7 @@ class TestScenarioWindow(QMainWindow):
 class BusinessRulesWindow(QMainWindow):
     def __init__(self, parent: "MainWindow") -> None:
         super().__init__(parent)
+        self.parent_window = parent
         self.setWindowTitle("Recommendation Rules")
         self.resize(700, 500)
 
@@ -220,14 +225,29 @@ class BusinessRulesWindow(QMainWindow):
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
-        rules_text = QTextEdit()
-        rules_text.setReadOnly(True)
-        rules_text.setPlainText(
+        self.chk_use_adjustments = QCheckBox("Show adjustment-mode guidance")
+        self.chk_use_adjustments.setChecked(self.parent_window.chk_use_adjustments.isChecked())
+        layout.addWidget(self.chk_use_adjustments)
+
+        self.rules_text = QTextEdit()
+        self.rules_text.setReadOnly(True)
+        layout.addWidget(self.rules_text)
+
+        self.chk_use_adjustments.stateChanged.connect(self._update_rules_text)
+        self._update_rules_text()
+
+    def _update_rules_text(self) -> None:
+        mode_line = (
+            "- Adjust mode: balancing adjustments at secondary/default locations replace transfer moves.\n"
+            if self.chk_use_adjustments.isChecked()
+            else "- Transfer mode: explicit From/To moves are recommended to reconcile secondary variances.\n"
+        )
+        self.rules_text.setPlainText(
             "Recommendation logic summary\n"
             "- Grouped by Warehouse + Item + Batch/lot; defaults and secondaries are evaluated together.\n"
             "- Warehouse 50 only: other warehouses are marked NO_ACTION with a guardrail note.\n"
             "- Default location must exist in recount lines; missing default or missing master -> INVESTIGATE.\n"
-            "- Secondary locations must reconcile exactly to system; variances generate TRANSFER or ADJUST actions.\n"
+            "- Secondary locations must reconcile exactly to system; variances generate actions.\n"
             "- Secured locations with variance are flagged and reduce confidence.\n"
             "- Default rules:\n"
             "  * If Default Count = 0 and default is unsecured+available with ST01 system qty > 0, no default-empty issue.\n"
@@ -235,11 +255,8 @@ class BusinessRulesWindow(QMainWindow):
             "  * If default is unsecured+available and count > 0, enforce ST01 min/max:\n"
             "    MIN = default-after-transfers, MAX = default-after-transfers + ST01 system.\n"
             "  * Non-eligible defaults compare directly to system-after-transfers.\n"
-            "- Transfer vs Adjust toggle:\n"
-            "  * Transfers mode outputs explicit From/To moves.\n"
-            "  * Adjust mode outputs balancing adjustments at the secondary and default locations instead.\n"
+            f"{mode_line}"
         )
-        layout.addWidget(rules_text)
 
 
 class MainWindow(QMainWindow):
@@ -256,9 +273,20 @@ class MainWindow(QMainWindow):
 
         self.notes_db = NotesDB(Path("data") / "cyclecount_notes.db")
 
-        root = QWidget()
-        self.setCentralWidget(root)
-        root_layout = QVBoxLayout(root)
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+
+        main_tab = QWidget()
+        tabs.addTab(main_tab, "Main")
+        root_layout = QVBoxLayout(main_tab)
+
+        reference_tab = QWidget()
+        tabs.addTab(reference_tab, "Reference")
+        reference_layout = QVBoxLayout(reference_tab)
+        reference_layout.addWidget(QLabel("Business rules and guidance"))
+        self.btn_open_rules = QPushButton("Open Recommendation Rules")
+        reference_layout.addWidget(self.btn_open_rules)
+        reference_layout.addStretch(1)
 
         # ---------- TOP CONTROLS ----------
         top = QWidget()
@@ -381,7 +409,7 @@ class MainWindow(QMainWindow):
         self.btn_load_recount.clicked.connect(self._pick_recount)
         self.btn_build_review.clicked.connect(self._build_review)
         self.btn_export.clicked.connect(self._export_xlsx)
-        self.btn_run_test.clicked.connect(self._run_test_scenario)
+        self.btn_open_rules.clicked.connect(self._open_rules_window)
 
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
@@ -433,12 +461,9 @@ class MainWindow(QMainWindow):
         tools_menu = QMenu("Tools", self)
 
         action_test = QAction("Open Test Scenario", self)
-        action_rules = QAction("View Business Rules", self)
         action_test.triggered.connect(self._open_test_window)
-        action_rules.triggered.connect(self._open_rules_window)
 
         tools_menu.addAction(action_test)
-        tools_menu.addAction(action_rules)
         menubar.addMenu(tools_menu)
         self.setMenuBar(menubar)
 
