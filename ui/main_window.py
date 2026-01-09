@@ -85,8 +85,6 @@ class MainWindow(QMainWindow):
         reference_tab = QWidget()
         tabs.addTab(reference_tab, "Reference")
         reference_layout = QVBoxLayout(reference_tab)
-        self.chk_reference_transfer_pref = QCheckBox("Recommend transfers prior to adjustments")
-        reference_layout.addWidget(self.chk_reference_transfer_pref)
         self.rules_text = QTextEdit()
         self.rules_text.setReadOnly(True)
         reference_layout.addWidget(self.rules_text)
@@ -112,7 +110,6 @@ class MainWindow(QMainWindow):
         self.btn_build_review.setEnabled(False)
         self.btn_export = QPushButton("Export XLSX")
         self.btn_export.setEnabled(False)
-        self.chk_recommend_transfers = QCheckBox("Recommend transfers prior to adjustments")
         self.chk_dark_mode = QCheckBox("Dark Mode")
 
         self.session_id = QLineEdit()
@@ -149,7 +146,6 @@ class MainWindow(QMainWindow):
         locations_layout.addWidget(self.status_label)
 
         settings_group_layout.addWidget(locations_group)
-        settings_group_layout.addWidget(self.chk_recommend_transfers)
         settings_group_layout.addWidget(self.chk_dark_mode)
 
         settings_layout.addWidget(settings_group)
@@ -212,7 +208,6 @@ class MainWindow(QMainWindow):
 
         test_content_layout = QHBoxLayout()
         default_form = QFormLayout()
-        self.chk_test_transfer_pref = QCheckBox("Recommend transfers prior to adjustments")
         self.test_default_whs = QLineEdit()
         self.test_default_loc = QLineEdit()
         self.test_default_system = QLineEdit()
@@ -240,7 +235,7 @@ class MainWindow(QMainWindow):
         default_form.addRow(QLabel("System Qty:"), self.test_default_system)
         default_form.addRow(QLabel("Counted Qty:"), self.test_default_count)
         default_form.addRow("System Qty for ST01:", self.test_st01_system)
-        default_form.addRow("", self.chk_test_transfer_pref)
+        default_form.addRow("", QLabel(""))
 
         default_container = QWidget()
         default_container.setLayout(default_form)
@@ -303,8 +298,6 @@ class MainWindow(QMainWindow):
         self._apply_ui_theme()
         self._load_saved_locations_if_available()
         self._update_ready_state()
-        self._syncing_transfer_pref = False
-        self._bind_transfer_preference_controls()
         self._update_rules_text()
         self._update_column_selector([])
 
@@ -392,39 +385,7 @@ class MainWindow(QMainWindow):
         dialog_layout.addWidget(table, 1)
         dialog.exec()
 
-    def _bind_transfer_preference_controls(self) -> None:
-        self.chk_recommend_transfers.stateChanged.connect(
-            lambda: self._sync_transfer_preference(self.chk_recommend_transfers.isChecked(), "main")
-        )
-        self.chk_test_transfer_pref.stateChanged.connect(
-            lambda: self._sync_transfer_preference(self.chk_test_transfer_pref.isChecked(), "test")
-        )
-        self.chk_reference_transfer_pref.stateChanged.connect(
-            lambda: self._sync_transfer_preference(self.chk_reference_transfer_pref.isChecked(), "reference")
-        )
-        self._sync_transfer_preference(self.chk_recommend_transfers.isChecked(), "main")
-
-    def _sync_transfer_preference(self, checked: bool, source: str) -> None:
-        if self._syncing_transfer_pref:
-            return
-        self._syncing_transfer_pref = True
-        try:
-            if source != "main":
-                self.chk_recommend_transfers.setChecked(checked)
-            if source != "test":
-                self.chk_test_transfer_pref.setChecked(checked)
-            if source != "reference":
-                self.chk_reference_transfer_pref.setChecked(checked)
-            self._update_rules_text()
-        finally:
-            self._syncing_transfer_pref = False
-
     def _update_rules_text(self) -> None:
-        mode_line = (
-            "<li><strong>Transfer mode:</strong> explicit From/To moves are recommended to reconcile secondary variances.</li>"
-            if self.chk_recommend_transfers.isChecked()
-            else "<li><strong>Adjustment mode:</strong> transfer transactions are suppressed, but transfer math is preserved and MOVE + RECOUNT may still be recommended.</li>"
-        )
         self.rules_text.setHtml(
             "<h3>Recommendation logic summary</h3>"
             "<ol>"
@@ -432,17 +393,15 @@ class MainWindow(QMainWindow):
             "<li>Warehouses other than 50 are still processed: every non-ST01 location is treated like a secondary and adjusted to match physical counts (no default updates or transfers).</li>"
             "<li>ST01 is system-only and never counted; it is only used as a tolerance buffer for WHS 50 unsecured+available defaults.</li>"
             "<li>Secured locations with any variance are always direct ADJUST to match the physical count (no transfers, no ST01 tolerance).</li>"
-            "<li>If a secondary is over system and the default is unverified/empty or ST01 exists, recommend MOVE + RECOUNT (avoid net adjustments).</li>"
             "<li><strong>Default rules (WHS 50 only):</strong>"
             "<ol type=\"a\">"
             "<li>If Default Count = 0 and default is unsecured+available with ST01 system qty &gt; 0, no default-empty issue; note that default may be physically full.</li>"
-            "<li>If default is unsecured+available, compute MIN = default-system-after-moves and MAX = MIN + SysST01; "
+            "<li>If default is unsecured+available, compute MIN = default system and MAX = MIN + SysST01; "
             "within [MIN, MAX], snap the target entry to MIN.</li>"
             "<li>If Default Count &lt; MIN, recommend adding only enough to reach MIN; if Default Count &gt; MAX, recommend removing only enough to reach MAX.</li>"
-            "<li>Non-eligible defaults compare directly to system-after-moves.</li>"
+            "<li>Non-eligible defaults compare directly to system.</li>"
             "</ol>"
             "</li>"
-            f"{mode_line}"
             "</ol>"
         )
 
@@ -458,9 +417,8 @@ class MainWindow(QMainWindow):
             rec_df = load_recount_workbook(self.paths.recount_path)
             review_df = build_review_lines(sid, rec_df, loc_df)
 
-            # Step 3: recommendations + transfer plan + group summary
-            transfer_mode = "TRANSFER" if self.chk_recommend_transfers.isChecked() else "ADJUST"
-            review_df, transfers_df, group_df = apply_recommendations(review_df, transfer_mode=transfer_mode)
+            # Step 3: recommendations + group summary
+            review_df, transfers_df, group_df = apply_recommendations(review_df)
 
             original_columns = list(rec_df.columns) + [c for c in loc_df.columns if c not in rec_df.columns]
             missing_columns = [c for c in original_columns if c not in review_df.columns]
@@ -557,8 +515,7 @@ class MainWindow(QMainWindow):
             loc_df = load_warehouse_locations(self.paths.warehouse_locations_path)
             rec_df = self._build_test_recount_df()
             review_df = build_review_lines("TEST", rec_df, loc_df)
-            transfer_mode = "TRANSFER" if self.chk_recommend_transfers.isChecked() else "ADJUST"
-            review_df, _, _ = apply_recommendations(review_df, transfer_mode=transfer_mode)
+            review_df, _, _ = apply_recommendations(review_df)
         except Exception as e:
             QMessageBox.critical(self, "Test Scenario Error", str(e))
             return
@@ -912,20 +869,6 @@ class MainWindow(QMainWindow):
         else:
             sys_total = count_total = net_var = st01 = def_after = def_count = flags = ""
 
-        # transfer lines for this group
-        transfer_text = ""
-        if self.transfers_df is not None and not self.transfers_df.empty:
-            t = self.transfers_df[
-                (self.transfers_df["Whs"] == whs) &
-                (self.transfers_df["Item"] == item) &
-                (self.transfers_df["Batch/lot"] == lot)
-            ]
-            if not t.empty:
-                lines = []
-                for _, tr in t.iterrows():
-                    lines.append(f"- {tr['Qty']} : {tr['FromLocation']} → {tr['ToLocation']}")
-                transfer_text = "\n".join(lines)
-
         self.details.setText(
             f"Group: {whs} | {item} | {lot}\n"
             f"Selected Location: {loc}\n"
@@ -935,9 +878,8 @@ class MainWindow(QMainWindow):
             f"RemainingAdjustmentQty (group): {remaining}\n"
             f"Confidence: {conf} | Severity: {sev}\n\n"
             f"Totals: System={sys_total}  Count={count_total}  NetVar={net_var}\n"
-            f"ST01(System)={st01}  DefaultAfterTransfers={def_after}  DefaultCount={def_count}\n"
+            f"ST01(System)={st01}  DefaultSystem={def_after}  DefaultCount={def_count}\n"
             f"Flags: {flags}\n\n"
-            f"Transfers:\n{transfer_text if transfer_text else '(none)'}\n\n"
             f"Reason:\n{reason}"
         )
 
