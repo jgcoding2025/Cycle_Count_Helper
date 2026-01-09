@@ -237,9 +237,9 @@ class MainWindow(QMainWindow):
 
         default_form.addRow("Warehouse:", self.test_default_whs)
         default_form.addRow("Default Location (A):", self.test_default_loc)
-        default_form.addRow("System Qty for ST01:", self.test_st01_system)
         default_form.addRow(QLabel("System Qty:"), self.test_default_system)
         default_form.addRow(QLabel("Counted Qty:"), self.test_default_count)
+        default_form.addRow("System Qty for ST01:", self.test_st01_system)
         default_form.addRow("", self.chk_test_transfer_pref)
 
         default_container = QWidget()
