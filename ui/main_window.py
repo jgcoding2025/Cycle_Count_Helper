@@ -252,8 +252,8 @@ class MainWindow(QMainWindow):
             field.setMinimumWidth(220)
             field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        self.test_default_whs.setPlaceholderText("Warehouse (e.g. 50)")
-        self.test_default_loc.setPlaceholderText("Default Location (A)")
+        self.test_default_whs.setPlaceholderText("Warehouse")
+        self.test_default_loc.setPlaceholderText("Default")
         self.test_default_system.setPlaceholderText("System Qty")
         self.test_default_count.setPlaceholderText("Counted Qty")
         self.test_st01_system.setPlaceholderText("ST01 Qty")
