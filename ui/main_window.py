@@ -205,7 +205,7 @@ class MainWindow(QMainWindow):
         self.test_default_loc.setPlaceholderText("Default Location (A)")
         self.test_default_system.setPlaceholderText("System Qty")
         self.test_default_count.setPlaceholderText("Counted Qty")
-        self.test_st01_system.setPlaceholderText("System Qty for ST01")
+        self.test_st01_system.setPlaceholderText("ST01 Qty")
 
         default_form.addRow("Warehouse:", self.test_default_whs)
         default_form.addRow("Default Location (A):", self.test_default_loc)
