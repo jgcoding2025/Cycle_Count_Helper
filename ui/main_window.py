@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget
+
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -139,6 +142,23 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel("Load both files to begin.")
         self.status_label.setStyleSheet("font-weight: 600; color: #1f2933; padding: 4px;")
+
+        # Make buttons a reasonable width and prevent horizontal stretching
+        for b in (self.btn_load_locations, self.btn_view_locations):
+            b.setMaximumWidth(360)  # tweak to taste (300-420)
+            b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        # Put buttons in a left-aligned vertical layout
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(10)
+        btn_col.setAlignment(Qt.AlignLeft)
+        btn_col.addWidget(self.btn_load_locations)
+        btn_col.addWidget(self.btn_view_locations)
+
+        btn_wrap = QWidget()
+        btn_wrap.setLayout(btn_col)
+
+        locations_layout.addWidget(btn_wrap)
 
         locations_layout.addWidget(self.btn_load_locations)
         locations_layout.addWidget(self.btn_view_locations)
@@ -699,6 +719,15 @@ class MainWindow(QMainWindow):
                 QPushButton:disabled {
                     background-color: #475569;
                     color: #e2e8f0;
+                }
+                QCheckBox#darkModeCheckbox::indicator {
+                    width: 14px;
+                    height: 14px;
+                    border: 1px solid #555555;
+                    background: #ffffff;
+                }
+                QCheckBox#darkModeCheckbox::indicator:checked {
+                    background: #555555;
                 }
                 QCheckBox {
                     spacing: 8px;
