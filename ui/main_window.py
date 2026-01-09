@@ -230,9 +230,8 @@ class MainWindow(QMainWindow):
         test_group = QGroupBox("Test Scenario")
         test_layout = QVBoxLayout(test_group)
 
-        default_layout = QHBoxLayout()
-        default_form_left = QFormLayout()
-        default_form_right = QFormLayout()
+        test_content_layout = QHBoxLayout()
+        default_form = QFormLayout()
         self.chk_test_transfer_pref = QCheckBox("Recommend transfers prior to adjustments")
         self.test_default_whs = QLineEdit()
         self.test_default_loc = QLineEdit()
@@ -256,19 +255,21 @@ class MainWindow(QMainWindow):
         self.test_default_count.setPlaceholderText("Counted Qty")
         self.test_st01_system.setPlaceholderText("ST01 Qty")
 
-        default_form_left.addRow("Warehouse:", self.test_default_whs)
-        default_form_left.addRow("System Qty for ST01:", self.test_st01_system)
-        default_form_left.addRow("", self.chk_test_transfer_pref)
-        default_form_right.addRow("Default Location (A):", self.test_default_loc)
-        default_form_right.addRow(QLabel("System Qty:"), self.test_default_system)
-        default_form_right.addRow(QLabel("Counted Qty:"), self.test_default_count)
+        default_form.addRow("Warehouse:", self.test_default_whs)
+        default_form.addRow("Default Location (A):", self.test_default_loc)
+        default_form.addRow("System Qty for ST01:", self.test_st01_system)
+        default_form.addRow(QLabel("System Qty:"), self.test_default_system)
+        default_form.addRow(QLabel("Counted Qty:"), self.test_default_count)
+        default_form.addRow("", self.chk_test_transfer_pref)
 
-        default_layout.addLayout(default_form_left, 1)
-        default_layout.addLayout(default_form_right, 1)
-        test_layout.addLayout(default_layout)
+        default_container = QWidget()
+        default_container.setLayout(default_form)
 
+        secondary_container = QWidget()
+        secondary_layout = QVBoxLayout(secondary_container)
+        secondary_layout.setContentsMargins(0, 0, 0, 0)
         secondary_label = QLabel("Secondary Locations (up to 5)")
-        test_layout.addWidget(secondary_label)
+        secondary_layout.addWidget(secondary_label)
 
         self.test_secondary_table = QTableWidget(5, 4)
         self.test_secondary_table.setHorizontalHeaderLabels([
@@ -280,7 +281,11 @@ class MainWindow(QMainWindow):
         self.test_secondary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.test_secondary_table.verticalHeader().setVisible(False)
         self.test_secondary_table.setCornerButtonEnabled(False)
-        test_layout.addWidget(self.test_secondary_table)
+        secondary_layout.addWidget(self.test_secondary_table)
+
+        test_content_layout.addWidget(default_container, 1)
+        test_content_layout.addWidget(secondary_container, 2)
+        test_layout.addLayout(test_content_layout)
 
         controls_layout = QHBoxLayout()
         self.btn_run_test = QPushButton("Run Test Scenario")
