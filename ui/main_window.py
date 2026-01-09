@@ -72,7 +72,7 @@ class FilterHeader(QHeaderView):
             editor.deleteLater()
         self._filters = []
         for i in range(count):
-            editor = QComboBox(self)
+            editor = QComboBox(self.viewport())
             editor.setEditable(True)
             editor.setInsertPolicy(QComboBox.NoInsert)
             editor.setSizeAdjustPolicy(QComboBox.AdjustToContents)
@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeader(self.table_header)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table_header.filterChanged.connect(self._on_header_filter_changed)
+        self.table.horizontalScrollBar().valueChanged.connect(self.table_header._position_filters)
         splitter.addWidget(self.table)
 
         self.details = QLabel("Click a row to see group details.")
