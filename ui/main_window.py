@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QDialog,
     QHeaderView,
+    QSizePolicy,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -189,13 +190,16 @@ class MainWindow(QMainWindow):
         self.test_st01_system = QLineEdit()
 
         for field in (
-            self.test_default_whs,
             self.test_default_system,
             self.test_default_count,
             self.test_st01_system,
         ):
             field.setMaximumWidth(160)
             field.setMinimumWidth(100)
+
+        for field in (self.test_default_whs, self.test_default_loc):
+            field.setMinimumWidth(220)
+            field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.test_default_whs.setPlaceholderText("Warehouse (e.g. 50)")
         self.test_default_loc.setPlaceholderText("Default Location (A)")
