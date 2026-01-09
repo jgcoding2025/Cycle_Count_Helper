@@ -6,7 +6,7 @@ import re
 
 import pandas as pd
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSettings
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHeaderView,
     QSizePolicy,
+    QScrollArea,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -105,6 +106,8 @@ class MainWindow(QMainWindow):
         self.test_results_df: pd.DataFrame | None = None
         self.locations_cache_path = Path("data") / "warehouse_locations_saved.xlsx"
         self.locations_loaded_at: datetime | None = None
+        self.settings = QSettings("CycleCountAssistant", "CycleCountAssistant")
+        self._hidden_columns = self._load_hidden_columns()
 
         self.notes_db = NotesDB(Path("data") / "cyclecount_notes.db")
 
@@ -240,7 +243,27 @@ class MainWindow(QMainWindow):
         self.details = QLabel("Click a row to see group details.")
         self.details.setWordWrap(True)
         self.details.setStyleSheet("color: #3e4c59;")
-        splitter.addWidget(self.details)
+
+        self.column_selector_group = QGroupBox("Columns")
+        column_selector_layout = QVBoxLayout(self.column_selector_group)
+        column_selector_layout.setContentsMargins(6, 6, 6, 6)
+        column_selector_layout.setSpacing(6)
+        self.column_selector_scroll = QScrollArea()
+        self.column_selector_scroll.setWidgetResizable(True)
+        self.column_selector_content = QWidget()
+        self.column_selector_content_layout = QVBoxLayout(self.column_selector_content)
+        self.column_selector_content_layout.setSpacing(4)
+        self.column_selector_scroll.setWidget(self.column_selector_content)
+        column_selector_layout.addWidget(self.column_selector_scroll)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
+        right_layout.addWidget(self.details)
+        right_layout.addWidget(self.column_selector_group, 1)
+
+        splitter.addWidget(right_panel)
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -349,6 +372,7 @@ class MainWindow(QMainWindow):
         self._syncing_transfer_pref = False
         self._bind_transfer_preference_controls()
         self._update_rules_text()
+        self._update_column_selector([])
 
     # ---------- FILE PICKERS ----------
     def _pick_locations(self) -> None:
@@ -706,6 +730,8 @@ class MainWindow(QMainWindow):
                     self.table.setItem(r, c, item)
 
             self.table.resizeColumnsToContents()
+            self._apply_column_visibility(headers)
+            self._update_column_selector(headers)
         finally:
             self._updating_table = False
 
@@ -1045,6 +1071,54 @@ class MainWindow(QMainWindow):
     def _refresh_tables(self) -> None:
         self._apply_filters()
         self._refresh_test_results()
+
+    def _load_hidden_columns(self) -> set[str]:
+        stored = self.settings.value("hidden_columns", [])
+        if isinstance(stored, str):
+            stored = [stored]
+        return {str(name) for name in stored}
+
+    def _save_hidden_columns(self) -> None:
+        self.settings.setValue("hidden_columns", sorted(self._hidden_columns))
+
+    def _clear_layout(self, layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _update_column_selector(self, headers: list[str]) -> None:
+        self._clear_layout(self.column_selector_content_layout)
+        if not headers:
+            self.column_selector_content_layout.addWidget(QLabel("Load a count sheet to view columns."))
+            self.column_selector_content_layout.addStretch(1)
+            return
+
+        for idx, header in enumerate(headers):
+            label = self._format_header(header)
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(header not in self._hidden_columns)
+            checkbox.toggled.connect(
+                lambda checked, col_name=header, col_index=idx: self._toggle_column_visibility(
+                    col_name, col_index, checked
+                )
+            )
+            self.column_selector_content_layout.addWidget(checkbox)
+
+        self.column_selector_content_layout.addStretch(1)
+
+    def _toggle_column_visibility(self, column_name: str, column_index: int, checked: bool) -> None:
+        self.table.setColumnHidden(column_index, not checked)
+        if checked:
+            self._hidden_columns.discard(column_name)
+        else:
+            self._hidden_columns.add(column_name)
+        self._save_hidden_columns()
+
+    def _apply_column_visibility(self, headers: list[str]) -> None:
+        for idx, header in enumerate(headers):
+            self.table.setColumnHidden(idx, header in self._hidden_columns)
 
 
     # ---------- EXPORT ----------
