@@ -34,6 +34,8 @@ def _confidence_cap(conf: str, cap: str) -> str:
 def _group_headline(flags: dict, remaining_adj: float, has_transfers: bool) -> str:
     if flags.get("missing_master"):
         return "Investigate: location not in master"
+    if flags.get("move_recount"):
+        return "Move + recount required (include default)"
     if flags.get("secured_variance"):
         return "Investigate: secured location variance"
     if flags.get("default_empty"):
@@ -55,7 +57,7 @@ def _group_headline(flags: dict, remaining_adj: float, has_transfers: bool) -> s
 
 def apply_recommendations(
     review_lines: pd.DataFrame,
-    transfer_mode: str = "TRANSFER",
+    transfer_mode: str = "ADJUST",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Input: Review_Lines dataframe from Step 2 (already enriched with Location Type / Allocation Category)
@@ -92,6 +94,7 @@ def apply_recommendations(
     df["FromLocation"] = ""
     df["ToLocation"] = ""
     df["RemainingAdjustmentQty"] = 0.0
+    df["SetLocationQtyTo"] = pd.NA
     df["Reason"] = ""
     df["Confidence"] = "Med"
     df["Severity"] = 0
@@ -242,61 +245,134 @@ def apply_recommendations(
             delta = count_qty - system_qty
 
             if delta > 0:
-                # Need more system qty in secondary: transfer Default -> Secondary
+                # Secondary has more physical than system (overage at secondary).
+                # Rule:
+                # - If Allocation Category is AVAILABLE or AVAILABLE UPON REQUEST:
+                #     Physically move excess to default, then RECOUNT including default.
+                # - Otherwise:
+                #     RECOUNT including default (cannot move from this location type/category).
+
                 qty = float(delta)
-                transfers_out_default += qty
 
-                if use_transfers:
-                    transfers.append(TransferSuggestion(
-                        whs=str(whs), item=str(item), batch_lot=str(lot),
-                        qty=qty, from_location=default_loc, to_location=loc,
-                        reason="Secondary location must be accurate; system short vs count.",
-                        confidence="Med" if flags["secured_variance"] else "High",
-                        severity=90,
-                    ))
+                sec_alloc_cat = row["Allocation Category"] if "Allocation Category" in row else None
+                sec_alloc_norm = str(sec_alloc_cat).strip().lower() if sec_alloc_cat is not None else ""
 
-                    # Mark line recommendation
-                    df.loc[ridx, "RecommendationType"] = "TRANSFER"
-                    df.loc[ridx, "RecommendedQty"] = qty
-                    df.loc[ridx, "FromLocation"] = default_loc
-                    df.loc[ridx, "ToLocation"] = loc
-                    df.loc[ridx, "Reason"] = "Secondary > system; transfer from default to reconcile."
-                else:
-                    df.loc[ridx, "RecommendationType"] = "ADJUST"
+                sec_can_move = sec_alloc_norm in {
+                    "available",
+                    "available upon request",
+                    "available_on_request",  # defensive normalization
+                }
+
+                # In BOTH cases, we want a recount including default (movable locations get moved first).
+                flags["move_recount"] = True
+
+                if sec_can_move:
+                    # Tracks intended move INTO default for group context/math
+                    transfers_in_default += qty
+
+                    df.loc[ridx, "RecommendationType"] = "INVESTIGATE"
                     df.loc[ridx, "RecommendedQty"] = qty
                     df.loc[ridx, "Reason"] = (
-                        "Secondary > system; adjust up here and adjust down at default (transfer alternative)."
+                        "MOVE + RECOUNT: secondary > system and location is movable (AVAILABLE / AVAILABLE UPON REQUEST). "
+                        f"Physically move excess to default '{default_loc}', then recount including default."
                     )
-                df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
-                df.loc[ridx, "Severity"] = 90
+                    df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
+                    df.loc[ridx, "Severity"] = 80
+
+                    # Optional: only emit a transfer suggestion when transfer mode is enabled.
+                    # Note: this is an alternative execution method; primary outcome is still recount.
+                    if use_transfers:
+                        transfers.append(TransferSuggestion(
+                            whs=str(whs), item=str(item), batch_lot=str(lot),
+                            qty=qty, from_location=loc, to_location=default_loc,
+                            reason=(
+                                "Transfer enabled (alternative to adjustment). Planned physical move to default before recount."
+                            ),
+                            confidence="Med" if flags["secured_variance"] else "High",
+                            severity=80,
+                        ))
+                else:
+                    df.loc[ridx, "RecommendationType"] = "INVESTIGATE"
+                    df.loc[ridx, "RecommendedQty"] = qty
+                    df.loc[ridx, "Reason"] = (
+                        "RECOUNT REQUIRED: secondary > system but location is NOT movable. "
+                        f"Recount this location and default '{default_loc}' to resolve."
+                    )
+                    df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
+                    df.loc[ridx, "Severity"] = 85
+
 
             elif delta < 0:
-                # Too much system qty in secondary: transfer Secondary -> Default
+                # Secondary has less physical than system (shortage at secondary).
+                # New rule:
+                # - If secondary is movable (AVAILABLE / AVAILABLE UPON REQUEST) AND default is not verified (count==0),
+                #   assume techs may have replenished default from overstock -> MOVE + RECOUNT including default.
+                # - Otherwise, standard: recommend ADJUST down at secondary (or TRANSFER secondary->default if enabled).
+
                 qty = float(abs(delta))
-                transfers_in_default += qty
 
-                if use_transfers:
-                    transfers.append(TransferSuggestion(
-                        whs=str(whs), item=str(item), batch_lot=str(lot),
-                        qty=qty, from_location=loc, to_location=default_loc,
-                        reason="Secondary location must be accurate; excess system qty moved out.",
-                        confidence="Med" if flags["secured_variance"] else "High",
-                        severity=90,
-                    ))
+                sec_alloc_cat = row["Allocation Category"] if "Allocation Category" in row else None
+                sec_alloc_norm = str(sec_alloc_cat).strip().lower() if sec_alloc_cat is not None else ""
 
-                    df.loc[ridx, "RecommendationType"] = "TRANSFER"
-                    df.loc[ridx, "RecommendedQty"] = qty
-                    df.loc[ridx, "FromLocation"] = loc
-                    df.loc[ridx, "ToLocation"] = default_loc
-                    df.loc[ridx, "Reason"] = "Secondary < system; transfer to default to reconcile."
-                else:
-                    df.loc[ridx, "RecommendationType"] = "ADJUST"
+                sec_can_move = sec_alloc_norm in {
+                    "available",
+                    "available upon request",
+                    "available_on_request",
+                }
+
+                default_not_verified = (default_count == 0)
+
+                if sec_can_move and default_not_verified:
+                    # Treat as "could have replenished default from overstock"
+                    flags["move_recount"] = True
+                    transfers_in_default += qty  # reflects likely movement into default for group context
+
+                    df.loc[ridx, "RecommendationType"] = "INVESTIGATE"
                     df.loc[ridx, "RecommendedQty"] = qty
                     df.loc[ridx, "Reason"] = (
-                        "Secondary < system; adjust down here and adjust up at default (transfer alternative)."
+                        "MOVE + RECOUNT: secondary < system and default is not verified (count 0). "
+                        f"Possible replenishment from overstock into default '{default_loc}'. "
+                        "Recount including default before any adjustment."
                     )
-                df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
-                df.loc[ridx, "Severity"] = 90
+                    df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
+                    df.loc[ridx, "Severity"] = 80
+
+                    # Optional: only emit a transfer suggestion when transfer mode is enabled
+                    if use_transfers:
+                        transfers.append(TransferSuggestion(
+                            whs=str(whs), item=str(item), batch_lot=str(lot),
+                            qty=qty, from_location=loc, to_location=default_loc,
+                            reason="Transfer enabled (alternative). Possible overstock replenished default; recount required.",
+                            confidence="Med" if flags["secured_variance"] else "High",
+                            severity=80,
+                        ))
+
+                else:
+                    # Standard handling: secondary must be accurate
+                    if use_transfers:
+                        transfers_in_default += qty
+                        transfers.append(TransferSuggestion(
+                            whs=str(whs), item=str(item), batch_lot=str(lot),
+                            qty=qty, from_location=loc, to_location=default_loc,
+                            reason="Secondary < system; move system qty out so secondary is accurate.",
+                            confidence="Med" if flags["secured_variance"] else "High",
+                            severity=90,
+                        ))
+
+                        df.loc[ridx, "RecommendationType"] = "TRANSFER"
+                        df.loc[ridx, "RecommendedQty"] = qty
+                        df.loc[ridx, "FromLocation"] = loc
+                        df.loc[ridx, "ToLocation"] = default_loc
+                        df.loc[ridx, "Reason"] = "Secondary < system; transfer to default to reconcile (adjustment alternative)."
+                    else:
+                        df.loc[ridx, "RecommendationType"] = "ADJUST"
+                        df.loc[ridx, "SetLocationQtyTo"] = float(df.loc[ridx, "CountQty"])
+                        df.loc[ridx, "RecommendedQty"] = qty
+                        df.loc[ridx, "Reason"] = "Secondary < system; adjust down at this location."
+
+                    df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
+                    df.loc[ridx, "Severity"] = 90
+
 
             else:
                 # no action for this secondary line
@@ -307,6 +383,20 @@ def apply_recommendations(
 
         # Compute default after transfers
         default_after = default_system + transfers_in_default - transfers_out_default
+
+        # If group requires MOVE + RECOUNT, do not auto-adjust default.
+        # The recount result must drive the final adjustment decision.
+        if flags.get("move_recount"):
+            remaining_adj = 0.0
+            for didx in default_rows.index:
+                df.loc[didx, "RecommendationType"] = "INVESTIGATE"
+                df.loc[didx, "Reason"] = (
+                    f"MOVE + RECOUNT required due to secondary variance; recount including default '{default_loc}' "
+                    "before making any adjustment."
+                )
+                df.loc[didx, "Confidence"] = "Med"
+                df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 80)
+
 
         # Determine remaining adjustment AFTER transfers
         remaining_adj = 0.0
@@ -332,7 +422,7 @@ def apply_recommendations(
             # so default showing empty is not an issue.
             if default_eligible and sys_st01 > 0:
                 default_reason_lines.append(
-                    "Default count is 0, but SysST01 has inventory. Assume default may be physically full; no default-empty issue."
+                    "Default location shows 0, but ST01 shows inventory. Assume default may be physically full; no default-empty issue."
                 )
                 remaining_adj = 0.0
 
@@ -400,6 +490,7 @@ def apply_recommendations(
             for didx in default_rows.index:
                 if remaining_adj != 0:
                     df.loc[didx, "RecommendationType"] = "ADJUST"
+                    df.loc[didx, "SetLocationQtyTo"] = float(df.loc[didx, "CountQty"])
                     df.loc[didx, "RemainingAdjustmentQty"] = remaining_adj
                     df.loc[didx, "RecommendedQty"] = abs(remaining_adj)
                     df.loc[didx, "Reason"] = " ".join(default_reason_lines)
@@ -410,24 +501,6 @@ def apply_recommendations(
                     df.loc[didx, "Reason"] = " ".join(default_reason_lines)
                     df.loc[didx, "Confidence"] = group_conf
                     df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 60 if (transfers_in_default or transfers_out_default) else 0)
-
-        if not use_transfers and not default_rows.empty:
-            transfer_adjust_default = default_after - default_system
-            total_default_adjust = transfer_adjust_default + remaining_adj
-            if total_default_adjust != 0 and (df.loc[default_rows.index, "RecommendationType"] != "INVESTIGATE").all():
-                direction = "up" if total_default_adjust > 0 else "down"
-                for didx in default_rows.index:
-                    existing_reason = str(df.loc[didx, "Reason"])
-                    transfer_reason = (
-                        f"Transfer alternative: adjust default {direction} {abs(total_default_adjust):g} "
-                        f"to offset secondary adjustments."
-                    )
-                    combined_reason = " ".join([existing_reason, transfer_reason]).strip()
-                    df.loc[didx, "RecommendationType"] = "ADJUST"
-                    df.loc[didx, "RecommendedQty"] = abs(total_default_adjust)
-                    df.loc[didx, "Reason"] = combined_reason
-                    df.loc[didx, "Confidence"] = group_conf
-                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], group_sev)
 
         has_transfers = any(t.whs == str(whs) and t.item == str(item) and t.batch_lot == str(lot) for t in transfers)
         has_moves = has_transfers or bool(transfers_in_default or transfers_out_default)
