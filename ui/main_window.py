@@ -6,7 +6,7 @@ import re
 
 import pandas as pd
 
-from PySide6.QtCore import Qt, Signal, QSettings
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,8 +30,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QHeaderView,
     QSizePolicy,
-    QScrollArea,
-    QComboBox,
+    QListWidget,
+    QListWidgetItem,
+    QAbstractItemView,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -45,87 +46,6 @@ from datetime import datetime
 class LoadedPaths:
     warehouse_locations_path: Path | None = None
     recount_path: Path | None = None
-
-
-class FilterHeader(QHeaderView):
-    filterChanged = Signal(int, str)
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(Qt.Horizontal, parent)
-        self._filters: list[QComboBox] = []
-        self._filter_height = 24
-        self._all_label = "(All)"
-        self.sectionResized.connect(self._position_filters)
-        self.sectionMoved.connect(self._position_filters)
-        self.geometriesChanged.connect(self._position_filters)
-
-    def sizeHint(self):
-        size = super().sizeHint()
-        size.setHeight(size.height() + self._filter_height + 4)
-        return size
-
-    def filter_count(self) -> int:
-        return len(self._filters)
-
-    def set_filter_count(self, count: int, placeholders: list[str]) -> None:
-        for editor in self._filters:
-            editor.deleteLater()
-        self._filters = []
-        for i in range(count):
-            editor = QComboBox(self.viewport())
-            editor.setEditable(True)
-            editor.setInsertPolicy(QComboBox.NoInsert)
-            editor.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-            editor.lineEdit().setPlaceholderText(placeholders[i])
-            editor.addItem(self._all_label)
-            editor.lineEdit().textEdited.connect(lambda text, idx=i: self._emit_filter_changed(idx))
-            editor.currentIndexChanged.connect(lambda _, idx=i: self._emit_filter_changed(idx))
-            self._filters.append(editor)
-        self._position_filters()
-
-    def set_filter_placeholders(self, placeholders: list[str]) -> None:
-        for editor, placeholder in zip(self._filters, placeholders):
-            editor.lineEdit().setPlaceholderText(placeholder)
-
-    def set_filter_options(self, options: list[list[str]]) -> None:
-        for editor, values in zip(self._filters, options):
-            current = editor.currentText()
-            editor.blockSignals(True)
-            editor.clear()
-            editor.addItem(self._all_label)
-            for value in values:
-                editor.addItem(value)
-            if current and current != self._all_label:
-                if current in values:
-                    editor.setCurrentText(current)
-                else:
-                    editor.setEditText(current)
-            else:
-                editor.setCurrentIndex(0)
-            editor.blockSignals(False)
-
-    def _emit_filter_changed(self, index: int) -> None:
-        if index >= len(self._filters):
-            return
-        text = self._filters[index].currentText().strip()
-        if text == self._all_label:
-            text = ""
-        self.filterChanged.emit(index, text)
-
-    def _position_filters(self) -> None:
-        base_height = super().sizeHint().height()
-        for i, editor in enumerate(self._filters):
-            if self.isSectionHidden(i):
-                editor.hide()
-                continue
-            editor.show()
-            rect = self.sectionViewportPosition(i)
-            editor.setGeometry(
-                rect + 2,
-                base_height + 2,
-                max(0, self.sectionSize(i) - 4),
-                self._filter_height,
-            )
 
 
 class MainWindow(QMainWindow):
@@ -253,11 +173,7 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget()
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
-        self.table_header = FilterHeader(self.table)
-        self.table.setHorizontalHeader(self.table_header)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table_header.filterChanged.connect(self._on_header_filter_changed)
-        self.table.horizontalScrollBar().valueChanged.connect(self.table_header._position_filters)
         splitter.addWidget(self.table)
 
         self.details = QLabel("Click a row to see group details.")
@@ -268,13 +184,14 @@ class MainWindow(QMainWindow):
         column_selector_layout = QVBoxLayout(self.column_selector_group)
         column_selector_layout.setContentsMargins(6, 6, 6, 6)
         column_selector_layout.setSpacing(6)
-        self.column_selector_scroll = QScrollArea()
-        self.column_selector_scroll.setWidgetResizable(True)
-        self.column_selector_content = QWidget()
-        self.column_selector_content_layout = QVBoxLayout(self.column_selector_content)
-        self.column_selector_content_layout.setSpacing(4)
-        self.column_selector_scroll.setWidget(self.column_selector_content)
-        column_selector_layout.addWidget(self.column_selector_scroll)
+        self.column_selector_list = QListWidget()
+        self.column_selector_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.column_selector_list.setDefaultDropAction(Qt.MoveAction)
+        self.column_selector_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.column_selector_list.setAlternatingRowColors(True)
+        self.column_selector_list.itemChanged.connect(self._on_column_selector_item_changed)
+        self.column_selector_list.model().rowsMoved.connect(self._on_column_selector_reordered)
+        column_selector_layout.addWidget(self.column_selector_list)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -379,9 +296,10 @@ class MainWindow(QMainWindow):
         self.btn_view_locations.clicked.connect(self._show_loaded_locations)
 
         self.filter_search.textChanged.connect(self._apply_filters)
-        self._column_filters: dict[int, str] = {}
+        self._column_order: list[str] = []
         self._table_headers: list[str] = []
         self._updating_table = False
+        self._updating_column_selector = False
         self._apply_ui_theme()
         self._load_saved_locations_if_available()
         self._update_ready_state()
@@ -715,11 +633,6 @@ class MainWindow(QMainWindow):
             self.table.setColumnCount(len(headers))
             self.table.setRowCount(len(df))
             self.table.setHorizontalHeaderLabels(display_headers)
-            if self.table_header.filter_count() != len(headers):
-                self._column_filters = {}
-                self.table_header.set_filter_count(len(headers), display_headers)
-            else:
-                self.table_header.set_filter_placeholders(display_headers)
 
             # Remember column index for UserNotes
             self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
@@ -748,7 +661,6 @@ class MainWindow(QMainWindow):
             self.table.resizeColumnsToContents()
             self._apply_column_visibility(headers)
             self._update_column_selector(headers)
-            self._update_header_filters(df)
         finally:
             self._updating_table = False
 
@@ -1059,10 +971,6 @@ class MainWindow(QMainWindow):
             self.review_df.at[r, "NoteUpdatedAt"] = updated
 
 
-    def _on_header_filter_changed(self, column: int, text: str) -> None:
-        self._column_filters[column] = text
-        self._apply_filters()
-
     def _apply_filters(self) -> None:
         if self.review_df is None:
             return
@@ -1079,16 +987,6 @@ class MainWindow(QMainWindow):
                     mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False)
                 df = df[mask]
 
-        for idx, text in self._column_filters.items():
-            if not text:
-                continue
-            if idx >= len(self._table_headers):
-                continue
-            col = self._table_headers[idx]
-            if col not in df.columns:
-                continue
-            df = df[df[col].astype(str).str.contains(text, case=False, na=False)]
-
         # Re-render table (keeps notes editing)
         self._set_table_from_df(df)
 
@@ -1104,20 +1002,6 @@ class MainWindow(QMainWindow):
         self._apply_filters()
         self._refresh_test_results()
 
-    def _update_header_filters(self, df: pd.DataFrame) -> None:
-        if self.table_header.filter_count() == 0:
-            return
-        source_df = self.review_df if self.review_df is not None else df
-        options: list[list[str]] = []
-        for col in self._table_headers:
-            if col not in source_df.columns:
-                options.append([])
-                continue
-            series = source_df[col].dropna().astype(str)
-            unique_values = sorted(set(series.tolist()))
-            options.append(unique_values)
-        self.table_header.set_filter_options(options)
-
     def _load_hidden_columns(self) -> set[str]:
         stored = self.settings.value("hidden_columns", [])
         if isinstance(stored, str):
@@ -1127,32 +1011,69 @@ class MainWindow(QMainWindow):
     def _save_hidden_columns(self) -> None:
         self.settings.setValue("hidden_columns", sorted(self._hidden_columns))
 
-    def _clear_layout(self, layout: QVBoxLayout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
     def _update_column_selector(self, headers: list[str]) -> None:
-        self._clear_layout(self.column_selector_content_layout)
-        if not headers:
-            self.column_selector_content_layout.addWidget(QLabel("Load a count sheet to view columns."))
-            self.column_selector_content_layout.addStretch(1)
+        self._updating_column_selector = True
+        try:
+            self.column_selector_list.clear()
+            if not headers:
+                placeholder = QListWidgetItem("Load a count sheet to view columns.")
+                placeholder.setFlags(Qt.NoItemFlags)
+                self.column_selector_list.addItem(placeholder)
+                return
+
+            if set(self._column_order) == set(headers):
+                ordered_headers = [h for h in self._column_order if h in headers]
+            else:
+                ordered_headers = list(headers)
+                self._column_order = ordered_headers.copy()
+
+            for header in ordered_headers:
+                label = self._format_header(header)
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, header)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                item.setCheckState(Qt.Checked if header not in self._hidden_columns else Qt.Unchecked)
+                self.column_selector_list.addItem(item)
+        finally:
+            self._updating_column_selector = False
+
+        self._apply_column_order(self._column_order)
+
+    def _on_column_selector_item_changed(self, item: QListWidgetItem) -> None:
+        if self._updating_column_selector:
             return
+        header = item.data(Qt.UserRole)
+        if not header or header not in self._table_headers:
+            return
+        column_index = self._table_headers.index(header)
+        checked = item.checkState() == Qt.Checked
+        self._toggle_column_visibility(header, column_index, checked)
 
-        for idx, header in enumerate(headers):
-            label = self._format_header(header)
-            checkbox = QCheckBox(label)
-            checkbox.setChecked(header not in self._hidden_columns)
-            checkbox.toggled.connect(
-                lambda checked, col_name=header, col_index=idx: self._toggle_column_visibility(
-                    col_name, col_index, checked
-                )
-            )
-            self.column_selector_content_layout.addWidget(checkbox)
+    def _on_column_selector_reordered(self, *_) -> None:
+        if self._updating_column_selector:
+            return
+        ordered_headers: list[str] = []
+        for i in range(self.column_selector_list.count()):
+            item = self.column_selector_list.item(i)
+            header = item.data(Qt.UserRole)
+            if header:
+                ordered_headers.append(header)
+        if not ordered_headers:
+            return
+        self._column_order = ordered_headers
+        self._apply_column_order(ordered_headers)
 
-        self.column_selector_content_layout.addStretch(1)
+    def _apply_column_order(self, ordered_headers: list[str]) -> None:
+        if not ordered_headers or not self._table_headers:
+            return
+        header_view = self.table.horizontalHeader()
+        for target_index, header in enumerate(ordered_headers):
+            if header not in self._table_headers:
+                continue
+            logical_index = self._table_headers.index(header)
+            current_visual = header_view.visualIndex(logical_index)
+            if current_visual != target_index:
+                header_view.moveSection(current_visual, target_index)
 
     def _toggle_column_visibility(self, column_name: str, column_index: int, checked: bool) -> None:
         self.table.setColumnHidden(column_index, not checked)
