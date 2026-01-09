@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.review_df: pd.DataFrame | None = None
         self.transfers_df: pd.DataFrame | None = None
         self.group_df: pd.DataFrame | None = None
+        self.test_results_df: pd.DataFrame | None = None
         self.locations_cache_path = Path("data") / "warehouse_locations_saved.xlsx"
         self.locations_loaded_at: datetime | None = None
 
@@ -191,6 +192,24 @@ class MainWindow(QMainWindow):
         settings_group_layout.addWidget(locations_group)
         settings_group_layout.addWidget(self.chk_recommend_transfers)
         settings_group_layout.addWidget(self.chk_dark_mode)
+
+        row_visibility_group = QGroupBox("Row Visibility")
+        row_visibility_layout = QVBoxLayout(row_visibility_group)
+        row_visibility_layout.setSpacing(6)
+        self.chk_show_adjust = QCheckBox("Show ADJUST rows")
+        self.chk_show_transfer = QCheckBox("Show TRANSFER rows")
+        self.chk_show_no_action = QCheckBox("Show NO_ACTION rows")
+        self.chk_show_investigate = QCheckBox("Show INVESTIGATE rows")
+        for checkbox in (
+            self.chk_show_adjust,
+            self.chk_show_transfer,
+            self.chk_show_no_action,
+            self.chk_show_investigate,
+        ):
+            checkbox.setChecked(True)
+            row_visibility_layout.addWidget(checkbox)
+
+        settings_group_layout.addWidget(row_visibility_group)
         settings_layout.addWidget(settings_group)
         settings_layout.addStretch(1)
 
@@ -214,6 +233,7 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table_header = FilterHeader(self.table)
         self.table.setHorizontalHeader(self.table_header)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table_header.filterChanged.connect(self._on_header_filter_changed)
         splitter.addWidget(self.table)
 
@@ -316,6 +336,10 @@ class MainWindow(QMainWindow):
         self.btn_view_locations.clicked.connect(self._show_loaded_locations)
 
         self.filter_search.textChanged.connect(self._apply_filters)
+        self.chk_show_adjust.stateChanged.connect(self._refresh_tables)
+        self.chk_show_transfer.stateChanged.connect(self._refresh_tables)
+        self.chk_show_no_action.stateChanged.connect(self._refresh_tables)
+        self.chk_show_investigate.stateChanged.connect(self._refresh_tables)
         self._column_filters: dict[int, str] = {}
         self._table_headers: list[str] = []
         self._updating_table = False
@@ -512,7 +536,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load/Build Error", str(e))
             return
 
-        self._set_table_from_df(self.review_df)
+        self._apply_filters()
         self.btn_export.setEnabled(True)
 
     def _build_test_recount_df(self) -> pd.DataFrame:
@@ -594,8 +618,8 @@ class MainWindow(QMainWindow):
         ]
         available_cols = [c for c in result_cols if c in review_df.columns]
         results = review_df[available_cols].copy()
-
-        self._set_test_table_from_df(results)
+        self.test_results_df = results
+        self._refresh_test_results()
 
     def _set_test_table_from_df(self, df: "pd.DataFrame") -> None:
         headers = [str(c) for c in df.columns]
@@ -950,16 +974,14 @@ class MainWindow(QMainWindow):
         loc = str(self.review_df.at[r, "Location"])
 
         note_text = item.text()
-        updated = datetime.now().isoformat(timespec="seconds")
+        # persist
+        key = NoteKey(sid, whs, part, lot, loc)
+        updated = self.notes_db.upsert_note(key, note_text)
 
         # update dataframe
         self.review_df.at[r, "UserNotes"] = note_text
         if "NoteUpdatedAt" in self.review_df.columns:
             self.review_df.at[r, "NoteUpdatedAt"] = updated
-
-        # persist
-        key = NoteKey(sid, whs, part, lot, loc)
-        self.notes_db.write_note(key, note_text, updated)
 
 
     def _on_header_filter_changed(self, column: int, text: str) -> None:
@@ -971,6 +993,7 @@ class MainWindow(QMainWindow):
             return
 
         df = self.review_df.copy()
+        df = self._apply_row_visibility(df)
 
         q = self.filter_search.text().strip().lower()
         if q:
@@ -993,6 +1016,35 @@ class MainWindow(QMainWindow):
 
         # Re-render table (keeps notes editing)
         self._set_table_from_df(df)
+
+    def _apply_row_visibility(self, df: pd.DataFrame) -> pd.DataFrame:
+        if "RecommendationType" not in df.columns:
+            return df
+
+        allowed = set()
+        if self.chk_show_adjust.isChecked():
+            allowed.add("ADJUST")
+        if self.chk_show_transfer.isChecked():
+            allowed.add("TRANSFER")
+        if self.chk_show_no_action.isChecked():
+            allowed.add("NO_ACTION")
+        if self.chk_show_investigate.isChecked():
+            allowed.add("INVESTIGATE")
+
+        if not allowed:
+            return df.iloc[0:0]
+
+        return df[df["RecommendationType"].astype(str).isin(allowed)]
+
+    def _refresh_test_results(self) -> None:
+        if self.test_results_df is None:
+            return
+        filtered = self._apply_row_visibility(self.test_results_df.copy())
+        self._set_test_table_from_df(filtered)
+
+    def _refresh_tables(self) -> None:
+        self._apply_filters()
+        self._refresh_test_results()
 
 
     # ---------- EXPORT ----------
