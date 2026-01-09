@@ -5,9 +5,8 @@ from pathlib import Path
 import re
 
 import pandas as pd
-import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +43,52 @@ from datetime import datetime
 class LoadedPaths:
     warehouse_locations_path: Path | None = None
     recount_path: Path | None = None
+
+
+class FilterHeader(QHeaderView):
+    filterChanged = Signal(int, str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(Qt.Horizontal, parent)
+        self._filters: list[QLineEdit] = []
+        self._filter_height = 24
+        self.sectionResized.connect(self._position_filters)
+        self.sectionMoved.connect(self._position_filters)
+        self.geometriesChanged.connect(self._position_filters)
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        size.setHeight(size.height() + self._filter_height + 4)
+        return size
+
+    def filter_count(self) -> int:
+        return len(self._filters)
+
+    def set_filter_count(self, count: int, placeholders: list[str]) -> None:
+        for editor in self._filters:
+            editor.deleteLater()
+        self._filters = []
+        for i in range(count):
+            editor = QLineEdit(self)
+            editor.setPlaceholderText(placeholders[i])
+            editor.textChanged.connect(lambda text, idx=i: self.filterChanged.emit(idx, text))
+            self._filters.append(editor)
+        self._position_filters()
+
+    def set_filter_placeholders(self, placeholders: list[str]) -> None:
+        for editor, placeholder in zip(self._filters, placeholders):
+            editor.setPlaceholderText(placeholder)
+
+    def _position_filters(self) -> None:
+        base_height = super().sizeHint().height()
+        for i, editor in enumerate(self._filters):
+            rect = self.sectionRect(i)
+            editor.setGeometry(
+                rect.x() + 2,
+                base_height + 2,
+                rect.width() - 4,
+                self._filter_height,
+            )
 
 
 class MainWindow(QMainWindow):
@@ -115,9 +160,19 @@ class MainWindow(QMainWindow):
         self.session_id.setText(datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.session_id.setFixedWidth(170)
 
+        self.btn_load_recount.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_build_review.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_export.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        session_container = QWidget()
+        session_layout = QHBoxLayout(session_container)
+        session_layout.setContentsMargins(0, 0, 0, 0)
+        session_layout.setSpacing(6)
+        session_layout.addWidget(QLabel("Session ID:"))
+        session_layout.addWidget(self.session_id, 1)
+
         self.top_layout.addWidget(self.btn_load_recount)
-        self.top_layout.addWidget(QLabel("SessionId:"))
-        self.top_layout.addWidget(self.session_id, 1)
+        self.top_layout.addWidget(session_container, 1)
         self.top_layout.addWidget(self.btn_build_review)
         self.top_layout.addWidget(self.btn_export)
 
@@ -145,17 +200,8 @@ class MainWindow(QMainWindow):
         self.filter_search = QLineEdit()
         self.filter_search.setPlaceholderText("Search Item / Location / Tag / Description...")
 
-        self.btn_show_all = QPushButton("Show All")
-        self.btn_show_actions = QPushButton("Only Actions (Adjust/Transfer/Investigate)")
-        self.btn_show_secured = QPushButton("Only Secured Variance")
-        self.btn_show_investigate = QPushButton("Only Investigate")
-
         filters_layout.addWidget(QLabel("Filter:"))
         filters_layout.addWidget(self.filter_search, 1)
-        filters_layout.addWidget(self.btn_show_all)
-        filters_layout.addWidget(self.btn_show_actions)
-        filters_layout.addWidget(self.btn_show_secured)
-        filters_layout.addWidget(self.btn_show_investigate)
 
         root_layout.addWidget(filters)
 
@@ -166,6 +212,9 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget()
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
+        self.table_header = FilterHeader(self.table)
+        self.table.setHorizontalHeader(self.table_header)
+        self.table_header.filterChanged.connect(self._on_header_filter_changed)
         splitter.addWidget(self.table)
 
         self.details = QLabel("Click a row to see group details.")
@@ -181,7 +230,9 @@ class MainWindow(QMainWindow):
         test_group = QGroupBox("Test Scenario")
         test_layout = QVBoxLayout(test_group)
 
-        default_form = QFormLayout()
+        default_layout = QHBoxLayout()
+        default_form_left = QFormLayout()
+        default_form_right = QFormLayout()
         self.chk_test_transfer_pref = QCheckBox("Recommend transfers prior to adjustments")
         self.test_default_whs = QLineEdit()
         self.test_default_loc = QLineEdit()
@@ -207,18 +258,16 @@ class MainWindow(QMainWindow):
         self.test_default_count.setPlaceholderText("Counted Qty")
         self.test_st01_system.setPlaceholderText("ST01 Qty")
 
-        default_form.addRow("Warehouse:", self.test_default_whs)
-        default_form.addRow("Default Location (A):", self.test_default_loc)
-        system_label = QLabel("System Qty:")
-        system_label.setStyleSheet("margin-left: 18px;")
-        count_label = QLabel("Counted Qty:")
-        count_label.setStyleSheet("margin-left: 18px;")
-        default_form.addRow(system_label, self.test_default_system)
-        default_form.addRow(count_label, self.test_default_count)
-        default_form.addRow("System Qty for ST01:", self.test_st01_system)
-        default_form.addRow("", self.chk_test_transfer_pref)
+        default_form_left.addRow("Warehouse:", self.test_default_whs)
+        default_form_left.addRow("System Qty for ST01:", self.test_st01_system)
+        default_form_left.addRow("", self.chk_test_transfer_pref)
+        default_form_right.addRow("Default Location (A):", self.test_default_loc)
+        default_form_right.addRow(QLabel("System Qty:"), self.test_default_system)
+        default_form_right.addRow(QLabel("Counted Qty:"), self.test_default_count)
 
-        test_layout.addLayout(default_form)
+        default_layout.addLayout(default_form_left, 1)
+        default_layout.addLayout(default_form_right, 1)
+        test_layout.addLayout(default_layout)
 
         secondary_label = QLabel("Secondary Locations (up to 5)")
         test_layout.addWidget(secondary_label)
@@ -264,12 +313,8 @@ class MainWindow(QMainWindow):
         self.btn_view_locations.clicked.connect(self._show_loaded_locations)
 
         self.filter_search.textChanged.connect(self._apply_filters)
-        self.btn_show_all.clicked.connect(lambda: self._set_filter_mode("ALL"))
-        self.btn_show_actions.clicked.connect(lambda: self._set_filter_mode("ACTIONS"))
-        self.btn_show_secured.clicked.connect(lambda: self._set_filter_mode("SECURED"))
-        self.btn_show_investigate.clicked.connect(lambda: self._set_filter_mode("INVESTIGATE"))
-
-        self._filter_mode = "ALL"
+        self._column_filters: dict[int, str] = {}
+        self._table_headers: list[str] = []
         self._updating_table = False
         self._apply_ui_theme()
         self._load_saved_locations_if_available()
@@ -598,10 +643,16 @@ class MainWindow(QMainWindow):
         try:
             headers = [str(c) for c in df.columns]
             display_headers = [self._format_header(c) for c in headers]
+            self._table_headers = headers
             self.table.clear()
             self.table.setColumnCount(len(headers))
             self.table.setRowCount(len(df))
             self.table.setHorizontalHeaderLabels(display_headers)
+            if self.table_header.filter_count() != len(headers):
+                self._column_filters = {}
+                self.table_header.set_filter_count(len(headers), display_headers)
+            else:
+                self.table_header.set_filter_placeholders(display_headers)
 
             # Remember column index for UserNotes
             self._col_usernotes = headers.index("UserNotes") if "UserNotes" in headers else -1
@@ -908,8 +959,8 @@ class MainWindow(QMainWindow):
         self.notes_db.write_note(key, note_text, updated)
 
 
-    def _set_filter_mode(self, mode: str) -> None:
-        self._filter_mode = mode
+    def _on_header_filter_changed(self, column: int, text: str) -> None:
+        self._column_filters[column] = text
         self._apply_filters()
 
     def _apply_filters(self) -> None:
@@ -917,16 +968,6 @@ class MainWindow(QMainWindow):
             return
 
         df = self.review_df.copy()
-
-        mode = getattr(self, "_filter_mode", "ALL")
-        if mode == "ACTIONS":
-            df = df[df["RecommendationType"].isin(["TRANSFER", "ADJUST", "INVESTIGATE"])]
-        elif mode == "SECURED":
-            # secured variance shows up as headline or flags; easiest filter is Location Type + Variance
-            if "Location Type" in df.columns:
-                df = df[(df["Location Type"].astype(str).str.lower() == "secured") & (df["VarianceQty"] != 0)]
-        elif mode == "INVESTIGATE":
-            df = df[df["RecommendationType"] == "INVESTIGATE"]
 
         q = self.filter_search.text().strip().lower()
         if q:
@@ -936,6 +977,16 @@ class MainWindow(QMainWindow):
                 for c in cols:
                     mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False)
                 df = df[mask]
+
+        for idx, text in self._column_filters.items():
+            if not text:
+                continue
+            if idx >= len(self._table_headers):
+                continue
+            col = self._table_headers[idx]
+            if col not in df.columns:
+                continue
+            df = df[df[col].astype(str).str.contains(text, case=False, na=False)]
 
         # Re-render table (keeps notes editing)
         self._set_table_from_df(df)
