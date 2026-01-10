@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import json
 
 import pandas as pd
 
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QAbstractItemView,
+    QComboBox,
 )
 
 from core.io_excel import load_warehouse_locations, load_recount_workbook
@@ -63,9 +65,11 @@ class MainWindow(QMainWindow):
         self.group_df: pd.DataFrame | None = None
         self.test_results_df: pd.DataFrame | None = None
         self.locations_cache_path = Path("data") / "warehouse_locations_saved.xlsx"
+        self.test_scenarios_path = Path("data") / "test_scenarios.json"
         self.locations_loaded_at: datetime | None = None
         self.settings = QSettings("CycleCountAssistant", "CycleCountAssistant")
         self._hidden_columns = self._load_hidden_columns()
+        self.test_scenarios: list[dict] = []
 
 
         base_font = QFont()
@@ -225,6 +229,18 @@ class MainWindow(QMainWindow):
         test_group = QGroupBox("Test Scenario")
         test_layout = QVBoxLayout(test_group)
 
+        test_presets_layout = QHBoxLayout()
+        self.test_scenario_picker = QComboBox()
+        self.test_scenario_picker.setMinimumWidth(240)
+        self.btn_load_test_scenario = QPushButton("Load Preset Scenario")
+        self.btn_reload_test_scenarios = QPushButton("Reload Presets")
+        test_presets_layout.addWidget(QLabel("Preset:"))
+        test_presets_layout.addWidget(self.test_scenario_picker)
+        test_presets_layout.addWidget(self.btn_load_test_scenario)
+        test_presets_layout.addWidget(self.btn_reload_test_scenarios)
+        test_presets_layout.addStretch(1)
+        test_layout.addLayout(test_presets_layout)
+
         test_content_layout = QHBoxLayout()
         default_form = QFormLayout()
         self.test_default_whs = QLineEdit()
@@ -281,6 +297,17 @@ class MainWindow(QMainWindow):
         test_content_layout.addWidget(secondary_container, 2)
         test_layout.addLayout(test_content_layout)
 
+        notes_layout = QFormLayout()
+        self.test_purpose = QTextEdit()
+        self.test_expected_output = QTextEdit()
+        self.test_purpose.setFixedHeight(80)
+        self.test_expected_output.setFixedHeight(100)
+        notes_layout.addRow("Purpose:", self.test_purpose)
+        notes_layout.addRow("Expected Output:", self.test_expected_output)
+        notes_container = QWidget()
+        notes_container.setLayout(notes_layout)
+        test_layout.addWidget(notes_container)
+
         controls_layout = QHBoxLayout()
         self.btn_run_test = QPushButton("Run Test Scenario")
         controls_layout.addWidget(self.btn_run_test)
@@ -307,6 +334,8 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.chk_dark_mode.stateChanged.connect(self._toggle_theme)
         self.btn_view_locations.clicked.connect(self._show_loaded_locations)
+        self.btn_load_test_scenario.clicked.connect(self._load_selected_test_scenario)
+        self.btn_reload_test_scenarios.clicked.connect(self._refresh_test_scenario_presets)
 
         self.filter_search.textChanged.connect(self._apply_filters)
         self._column_order: list[str] = []
@@ -315,6 +344,7 @@ class MainWindow(QMainWindow):
         self._updating_column_selector = False
         self._apply_ui_theme()
         self._load_saved_locations_if_available()
+        self._refresh_test_scenario_presets()
         self._update_ready_state()
         self._update_rules_text()
         self._update_column_selector([])
@@ -505,6 +535,75 @@ class MainWindow(QMainWindow):
             raise ValueError("Enter at least one default or secondary location row.")
 
         return pd.DataFrame(rows)
+
+    def _refresh_test_scenario_presets(self) -> None:
+        self.test_scenarios = []
+        self.test_scenario_picker.clear()
+        if not self.test_scenarios_path.exists():
+            self.test_scenario_picker.addItem("No presets found")
+            self.btn_load_test_scenario.setEnabled(False)
+            return
+
+        try:
+            payload = json.loads(self.test_scenarios_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            QMessageBox.warning(
+                self,
+                "Test Scenario Presets",
+                f"Unable to read preset JSON: {exc}",
+            )
+            self.test_scenario_picker.addItem("Invalid presets file")
+            self.btn_load_test_scenario.setEnabled(False)
+            return
+
+        scenarios = payload.get("scenarios", payload if isinstance(payload, list) else [])
+        if not isinstance(scenarios, list) or not scenarios:
+            self.test_scenario_picker.addItem("No presets available")
+            self.btn_load_test_scenario.setEnabled(False)
+            return
+
+        for scenario in scenarios:
+            name = str(scenario.get("name", "Unnamed Scenario"))
+            self.test_scenario_picker.addItem(name)
+            self.test_scenarios.append(scenario)
+
+        self.btn_load_test_scenario.setEnabled(True)
+
+    def _load_selected_test_scenario(self) -> None:
+        index = self.test_scenario_picker.currentIndex()
+        if index < 0 or index >= len(self.test_scenarios):
+            return
+        scenario = self.test_scenarios[index]
+        self._set_test_scenario_fields(scenario)
+
+    def _set_test_scenario_fields(self, scenario: dict) -> None:
+        default_info = scenario.get("default", {})
+        self.test_default_whs.setText(str(default_info.get("warehouse", "")))
+        self.test_default_loc.setText(str(default_info.get("default_location", "")))
+        self.test_default_system.setText(str(default_info.get("system_qty", "")))
+        self.test_default_count.setText(str(default_info.get("counted_qty", "")))
+        self.test_st01_system.setText(str(default_info.get("st01_system_qty", "")))
+
+        self.test_purpose.setPlainText(str(scenario.get("purpose", "")))
+        self.test_expected_output.setPlainText(str(scenario.get("expected_output", "")))
+
+        for r in range(self.test_secondary_table.rowCount()):
+            for c in range(self.test_secondary_table.columnCount()):
+                self.test_secondary_table.setItem(r, c, QTableWidgetItem(""))
+
+        secondaries = scenario.get("secondaries", [])
+        if not isinstance(secondaries, list):
+            return
+
+        for r, row in enumerate(secondaries[: self.test_secondary_table.rowCount()]):
+            whs = str(row.get("warehouse", "") or default_info.get("warehouse", ""))
+            loc = str(row.get("location", ""))
+            system_qty = str(row.get("system_qty", ""))
+            counted_qty = str(row.get("counted_qty", ""))
+            values = [whs, loc, system_qty, counted_qty]
+            for c, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                self.test_secondary_table.setItem(r, c, item)
 
     def _run_test_scenario(self) -> None:
         if not self.paths.warehouse_locations_path:

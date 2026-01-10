@@ -1,0 +1,70 @@
+{
+  "scenarios": [
+    {
+      "name": "Scenario 1: Default matches count",
+      "purpose": "Validate that a default location with no variance keeps the counted value.",
+      "expected_output": "RecommendationType should be ADJUST (or no action) with SetLocationQtyTo equal to Counted Qty.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "A01",
+        "system_qty": 25,
+        "counted_qty": 25,
+        "st01_system_qty": 0
+      },
+      "secondaries": [
+        {
+          "warehouse": "50",
+          "location": "B01",
+          "system_qty": 10,
+          "counted_qty": 10
+        }
+      ]
+    },
+    {
+      "name": "Scenario 2: Default above max, ST01 buffer",
+      "purpose": "Confirm that default location snaps down when counted quantity is above the allowed max.",
+      "expected_output": "SetLocationQtyTo should align to default system + ST01 buffer.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "A05",
+        "system_qty": 20,
+        "counted_qty": 40,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        {
+          "warehouse": "50",
+          "location": "B10",
+          "system_qty": 5,
+          "counted_qty": 5
+        },
+        {
+          "warehouse": "50",
+          "location": "B11",
+          "system_qty": 3,
+          "counted_qty": 3
+        }
+      ]
+    },
+    {
+      "name": "Scenario 3: Default below min, secondary variance",
+      "purpose": "Check that a low default count is raised to minimum and that secondary variance triggers adjust.",
+      "expected_output": "Default should adjust up to system qty; secondary should adjust to counted qty.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "A10",
+        "system_qty": 15,
+        "counted_qty": 5,
+        "st01_system_qty": 5
+      },
+      "secondaries": [
+        {
+          "warehouse": "50",
+          "location": "B20",
+          "system_qty": 8,
+          "counted_qty": 6
+        }
+      ]
+    }
+  ]
+}
