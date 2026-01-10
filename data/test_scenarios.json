@@ -1,69 +1,163 @@
 {
   "scenarios": [
     {
-      "name": "Scenario 1: Default matches count",
-      "purpose": "Validate that a default location with no variance keeps the counted value.",
-      "expected_output": "RecommendationType should be ADJUST (or no action) with SetLocationQtyTo equal to Counted Qty.",
+      "name": "Scenario 1 — No ST01 logic, balanced",
+      "purpose": "ST01=0 and no secondary imbalance; default should follow counted qty.",
+      "expected_output": "Scenario 1. Default SetLocationQtyTo = counted qty. No Investigate. No ST01 MIN/MAX shown.",
       "default": {
         "warehouse": "50",
-        "default_location": "A01",
+        "default_location": "1C1A",
         "system_qty": 25,
         "counted_qty": 25,
         "st01_system_qty": 0
       },
       "secondaries": [
-        {
-          "warehouse": "50",
-          "location": "B01",
-          "system_qty": 10,
-          "counted_qty": 10
-        }
+        { "warehouse": "50", "location": "ELEC", "system_qty": 10, "counted_qty": 10 }
       ]
     },
+
     {
-      "name": "Scenario 2: Default above max, ST01 buffer",
-      "purpose": "Confirm that default location snaps down when counted quantity is above the allowed max.",
-      "expected_output": "SetLocationQtyTo should align to default system + ST01 buffer.",
+      "name": "Scenario 2 — ST01 eligible, count within MIN/MAX",
+      "purpose": "ST01 logic active but count is plausible; default should stay at system.",
+      "expected_output": "Scenario 2. Default SetLocationQtyTo = system qty. Reason shows ST01 MIN/MAX and 'within range'.",
       "default": {
         "warehouse": "50",
-        "default_location": "A05",
-        "system_qty": 20,
-        "counted_qty": 40,
+        "default_location": "HPM2C",
+        "system_qty": 10,
+        "counted_qty": 15,
         "st01_system_qty": 10
       },
       "secondaries": [
-        {
-          "warehouse": "50",
-          "location": "B10",
-          "system_qty": 5,
-          "counted_qty": 5
-        },
-        {
-          "warehouse": "50",
-          "location": "B11",
-          "system_qty": 3,
-          "counted_qty": 3
-        }
+        { "warehouse": "50", "location": "ELEC", "system_qty": 5, "counted_qty": 5 }
       ]
     },
+
     {
-      "name": "Scenario 3: Default below min, secondary variance",
-      "purpose": "Check that a low default count is raised to minimum and that secondary variance triggers adjust.",
-      "expected_output": "Default should adjust up to system qty; secondary should adjust to counted qty.",
+      "name": "Scenario 2 — ST01 eligible, count BELOW MIN",
+      "purpose": "Count below plausible range; default should snap down and show below-MIN explanation.",
+      "expected_output": "Scenario 2. Default SetLocationQtyTo = counted qty. Reason shows ST01 MIN/MAX and 'below MIN by X'.",
       "default": {
         "warehouse": "50",
-        "default_location": "A10",
+        "default_location": "HPM2C",
         "system_qty": 15,
         "counted_qty": 5,
         "st01_system_qty": 5
       },
       "secondaries": [
-        {
-          "warehouse": "50",
-          "location": "B20",
-          "system_qty": 8,
-          "counted_qty": 6
-        }
+        { "warehouse": "50", "location": "ELEC", "system_qty": 8, "counted_qty": 6 }
+      ]
+    },
+
+    {
+      "name": "Scenario 2 — ST01 eligible, count ABOVE MAX",
+      "purpose": "Count exceeds plausible range; default should snap down to MAX.",
+      "expected_output": "Scenario 2. Default SetLocationQtyTo = system + outside tolerance. Reason shows ST01 MIN/MAX and 'above MAX by X'.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "HPM2C",
+        "system_qty": 20,
+        "counted_qty": 40,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "ELEC", "system_qty": 5, "counted_qty": 5 },
+        { "warehouse": "50", "location": "CONT1", "system_qty": 3, "counted_qty": 3 }
+      ]
+    },
+
+    {
+      "name": "Scenario 3 — No ST01 logic, unbalanced secondary",
+      "purpose": "Secondary excess would drive default negative; clamp default to zero without Investigate.",
+      "expected_output": "Scenario 3. Default SetLocationQtyTo = 0. No Investigate. Reason shows balancing and residual.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "1C1A",
+        "system_qty": 10,
+        "counted_qty": 999,
+        "st01_system_qty": 0
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "ELEC", "system_qty": 0, "counted_qty": 25 }
+      ]
+    },
+
+    {
+      "name": "Scenario 4 — ST01 eligible + unbalanced secondary (Investigate)",
+      "purpose": "ST01 logic active and secondary imbalance forces negative default; Investigate must trigger.",
+      "expected_output": "Scenario 4. Default clamped to 0. Investigate header. Reason shows ST01 MIN/MAX and residual.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "HPM2C",
+        "system_qty": 10,
+        "counted_qty": 0,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "ELEC", "system_qty": 0, "counted_qty": 25 }
+      ]
+    },
+
+    {
+      "name": "Investigate guidance — Transfer to Default",
+      "purpose": "Scenario 4 where an Available/UPR secondary has excess stock.",
+      "expected_output": "Investigate. NEXT guidance recommends physically transferring residual qty to Default.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "HPM2C",
+        "system_qty": 10,
+        "counted_qty": 0,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "CONT1", "system_qty": 0, "counted_qty": 20 }
+      ]
+    },
+
+    {
+      "name": "Investigate guidance — Check ST01 inflated",
+      "purpose": "Scenario 4 where secondary excess exists but is NOT Available/UPR.",
+      "expected_output": "Investigate. NEXT guidance recommends checking ST01 inflation.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "HPM2C",
+        "system_qty": 10,
+        "counted_qty": 0,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        { "warehouse": "55", "location": "CLSRM", "system_qty": 0, "counted_qty": 20 }
+      ]
+    },
+
+    {
+      "name": "Hard-stop — Missing Location Master",
+      "purpose": "Any missing location master should force Investigate and suppress adjustments.",
+      "expected_output": "Investigate. Reason indicates Missing Location Master. No SetLocationQtyTo outputs.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "HPM2C",
+        "system_qty": 10,
+        "counted_qty": 10,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "ZZZZZ", "system_qty": 0, "counted_qty": 5 }
+      ]
+    },
+
+    {
+      "name": "No variance — clean pass",
+      "purpose": "All system quantities equal counted quantities; recommender should do nothing.",
+      "expected_output": "No adjustments. GroupHeadline = No variance. No Investigate.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "HPM2C",
+        "system_qty": 10,
+        "counted_qty": 10,
+        "st01_system_qty": 0
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "ELEC", "system_qty": 5, "counted_qty": 5 }
       ]
     }
   ]

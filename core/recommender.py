@@ -82,7 +82,6 @@ def _group_headline(investigate: bool, has_adjustments: bool, net_group_variance
         return "Adjust"
     return "No variance"
 
-
 def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Implements Business Rules (Steps A–H) from business_logic.txt.
