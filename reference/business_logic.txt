@@ -1,60 +1,92 @@
 Notes/Definitions:
-1. Groups should be create per Item only
-2. ST01 Qty
+
+1. GROUPING
+    a. A “group” is one unique item (across all warehouses/locations).
+    b. ST01 is treated as its own location row in the group, but it is excluded from secondary variance math.
+2. LOCATION CLASSES
+    a. Default: the item’s designated default location row.
+    b. Secondary: every location row that is not default and not ST01.
+    c. ST01: special holding location; excluded from secondary variance calculation.
+3. ST01 STATES
     a. Unsecured: inventory offlined in the system that may still physically be in default (timing/process).
     b. Secured: inventory that has been physically pulled and is in ST01.
-3.Expected physical range in default (ST01 logic applies only when Default is Unsecured):
-    a. MIN = Default System Qty
-    b. MAX = Default System Qty + ST01 Qty 
-    c. If default physical count is outside that range, the count is still used, but we add an Investigate ST01/process note.
-    d. This range defines what is physically plausible, not what must be forced. Adjustments (when made) are made to the counted quantity, not to MIN/MAX.
-4. ST01 logic applied to default location means:
-    a. Expected_MIN = system qty for that location
-    b. Expected_MAX = system qty for that location + ST01
-    c. Logic only applies to unsecured inventory
-    d. This range defines what is physically plausible, not what must be forced.
-    For the default (eligible unsecured), the default is the final balancing location.
-    If the default count is within the ST01 plausible range, set default to the computed target (typically system-balanced) to avoid double-counting offlined inventory.
-    If the default count is outside the plausible range, set default to the counted quantity and flag investigation as needed.
-5. ST01 is never physically counted; assume it is correct, but recommend investigation when evidence supports it.
-    a. ST01 references are permitted only when ST01 system quantity > 0. If ST01 = 0, the system must not suggest checking ST01 or use ST01 in any reasoning.
-6. Default System Qty (default_system) = what the system says is in the default location
-7. Default target computation (always)
-    a. Compute secondary adjustments first, then:
-        default_adjusted_noconstraint = default_system − net_secondary_adjustments
-    b. Apply no negatives:
-        default_target = max(default_adjusted_noconstraint, 0)
-    c. Compute plausible physical range:
-        MIN = default_system
-        MAX = default_system + ST01
-    d. Decide what to set default to:
+4. ST01 REFERENCES
+    a. ST01 is never physically counted; assume it is correct.
+    b. ST01 may only be referenced when ST01 system qty <> 0
+    c. If ST01 = 0, the system must not suggest checking ST01 or use ST01 in any reasoning.
+5. EXPECTED PHYSICAL RANGE (for tolerance only)
+    (Used only to compute default_outside_tolerance_qty when ST01 logic is eligible.)
+    a. expected_physical_min = default_system
+    b. expected_physical_max = default_system + ST01
+6. Definitions
+    a. “exists an Available / Available upon request secondary with excess stock”:
+        Within the item group, at least one Secondary row (non-default, non-ST01) has Allocation Category = Available or Available upon request and (count − system) > 0
 
 
 Business Rules: ORDER of OPERATIONS FOR ADJUSTMENTS
-1. Group by Item (ignore warehouse differences; treat all warehouses like “secondary” behavior for balancing).
-2. Set every non-default, non-ST01 location to its counted qty (secondary adjustments first). 
-3. Compute net_secondary_adjustements = Σ(count − system) over all non-default, non-ST01 locations.
-4. Compute default_adjusted_noconstraint = default_system − net_secondary_adjustments.
-5. Apply no-negative constraint to the default target (system-after):
-    default_target = max(default_adjusted_noconstraint, 0)
-    residual_unbalanced = default_adjusted_noconstraint − default_target
-6. If residual_unbalanced ≠ 0 AND ST01 > 0, flag to investigate and recommend paths forward (do not auto-fix with ST01 math):
-    a. If there exists an “Available / Available upon request” secondary with excess stock, recommend:
-        i. Physically transfer {abs(residual_unbalanced)} to the default, then update location count.
-    b. Else recommend:
-        i. Check ST01 - may be inflated by approx. {abs(residual_unbalanced)}
-7. Apply ST01 plausibility check only if eligible (Criteria = Default Location + Unsecured + ST01 does not equal 0):
-    a. Compute MIN/MAX as above.
-    b. If DefaultCount < MIN or DefaultCount > MAX, add “Investigate ST01/process timing” reason.
-    c. Do not clamp the default target to MIN/MAX. MIN/MAX is used only to determine whether the default count is trusted or whether investigation is required.
-8. For outputs of SetLocationQtyTo:
-    a. Secondary locations: SetLocationQtyTo = CountQty
-    b. Default location:
-        i. If ST01 logic is eligible and DefaultCount is within the plausible range [MIN,MAX]: SetLocationQtyTo = default_target (computed balancing value)
-        ii. If DefaultCount is outside the plausible range: SetLocationQtyTo = DefaultCount and flag investigation
-        iii. If ST01 logic is not eligible: SetLocationQtyTo = default_target
-    c. ST01: no set qty
-9. Calculate the final net variance of secondary locations + default location adjustments that were applied and use this to generate an output per group indicating final net adjustment, along with supporting reasons why for each individual item (not per group)
-    a. Report final net adjustment per group as:
-        net_group_adj = (Σ secondary adjustments) + (default adjustment) and display 0 when adds/removes cancel.
-10. Generate an output indicating what each location quantity should be set to for adjustments to apply, with the exception of ST01
+
+Step A — Secondary adjustments
+1. Group by Item (ignore warehouse differences; treat all warehouses uniformly in the grouping).
+2. For every Secondary row (non-default, non-ST01):
+    set_location_qty_to = count
+3. Compute net_secondary_adjustments = Σ(count − system) over all non-default, non-ST01 locations.
+
+Step B — Compute default balancing math (always)
+    default_adjusted_noconstraint = default_system − net_secondary_adjustments
+    default_adjusted_with_constraint = max(default_adjusted_noconstraint, 0)
+    residual_unbalanced = default_adjusted_noconstraint - default_adjusted_with_constraint
+    
+    Interpretation:
+    If residual_unbalanced is negative, secondaries are “over-counted” relative to system such that default would need to go below zero to balance;
+    we clamp default to 0 and carry the negative residual.
+
+Step C — Compute these two critical tags
+1.  eligible_for_ST01_logic = "Yes" if:
+        Type is Unsecured
+        AND location is Default
+        AND Allocation Category is Available or Available upon request
+        AND ST01 <> 0
+    else "No"
+2. unbalanced_secondary = "Yes" if residual_unbalanced is negative, else "No"
+
+Step D — Compute ST01 tolerance quantities (only meaningful when eligible)
+    default_outside_tolerance_qty =
+        if default_counted < expected_physical_min → default_counted - expected_physical_min
+        else if default_counted > expected_physical_max → default_counted - expected_physical_max
+        else 0
+
+Step E — Scenarios (2×2 matrix from the two tags)
+1. scenario_1 = TRUE if eligible_for_ST01_logic="No" AND unbalanced_secondary="No"
+2. scenario_2 = TRUE if eligible_for_ST01_logic="Yes" AND unbalanced_secondary="No"
+3. scenario_3 = TRUE if eligible_for_ST01_logic="No" AND unbalanced_secondary="Yes"
+4. scenario_4 = TRUE if eligible_for_ST01_logic="Yes" AND unbalanced_secondary="Yes"
+    
+_scenario returns the matching label (“Scenario 1”…”Scenario 4”).
+
+Step F — Final set_location_qty_to outputs
+1. For secondary rows: set_location_qty_to = count
+2. ST01 row: No adjustment output (blank / excluded)
+3. For default row:
+    a. If _scenario = "Scenario 1" → set_location_qty_to = default_counted
+    b. If _scenario = "Scenario 2" → set_location_qty_to = default_system + default_outside_tolerance_qty
+    c. If _scenario = "Scenario 3" → set_location_qty_to = default_adjusted_with_constraint
+    e. If _scenario = "Scenario 4" → set_location_qty_to = default_adjusted_with_constraint
+        AND trigger group header for Investigate
+        Recommend paths forward:
+            If there exists an “Available / Available upon request” secondary with excess stock, recommend:
+            Physically transfer {abs(residual_unbalanced)} to the default, then update location count.
+        Else recommend:
+            Check ST01 - may be inflated by approx. {abs(residual_unbalanced)}
+
+Step G — Trigger "Investigate" header + recommended paths forward when either condition is true:
+1. Scenario 4 rule: If _scenario = "Scenario 4" → Investigate = TRUE
+2. Residual/ST01 rule (additional, independent)
+    a. If residual_unbalanced ≠ 0 AND ST01 > 0 → Investigate = TRUE
+    Recommend:
+        If there exists an Available / Available upon request Secondary with excess stock (where count > system):
+            “Physically transfer {abs(residual_unbalanced)} to the Default, then update location count.”
+        Else:
+            “Check ST01 — may be inflated by approx. {abs(residual_unbalanced)}.”
+
+STEP H — Output requirement
+1. Generate an output indicating what each location quantity should be set to for adjustments to (all locations except ST01).
