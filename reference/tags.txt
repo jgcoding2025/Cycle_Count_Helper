@@ -1,25 +1,35 @@
 Critical Tags
+
+//These tags output quantities
 net_secondary_adjustments = Σ(count − system) over all non-default, non-ST01 locations
 default_adjusted_noconstraint = default_system − net_secondary_adjustments
 default_adjusted_with_constraint = max(default_adjusted_noconstraint, 0)
 residual_unbalanced = default_adjusted_noconstraint - default_adjusted_with_constraint
 "default_outside_tolerance_qty = 
-if default_counted < expected_physical_min, then return default_counted - MIN
-else if default_counted is > expected_physical_max, then return default_counted - MAX"
+    if default_counted < expected_physical_min, then return default_counted - MIN
+    else if default_counted is > expected_physical_max, then return default_counted - MAX"
+
+//These two tags are crucial for determining which scenario applies, outputting a simple Yes or No
+eligible_for_ST01_logic = "Yes" if Type is Unsecured, location is the Default, Allocation Category is Available or Available upon request, and ST01 <> 0, else "No"
+unbalanced_secondary = "Yes" of residual_unbalanced is negative
+
+//These review the two tags to determine logic state. Only one scenario can be TRUE at a time, the remaining tags will be FALSE.
+scenario_1 = TRUE if ST01 logic and secondary variances do not apply, else FALSE
+scenario_2 = TRUE if ST01 logic applies, but secondary variances do not, else FALSE
+scenario_3 = TRUE if ST01 logic does not apply, but unbalanced secondary does
+scenario_4 = TRUE if ST01 logic and unbalanced secondary both apply
+
+//This is likely redundant and can be condensed in the future
+_scenario = checks to determine which scenario is TRUE
+if scenario_1 = TRUE, then output "Scenario 1"
+if scenario_2 = TRUE, then output "Scenario 2"
+if scenario_3 = TRUE, then output "Scenario 3"
+if scenario_4 = TRUE, then output "Scenario 4"
+
+//Final decision making to determine what to set the location qty to
 "set_location_qty_to =
 if location is secondary, return count
 else if _scenario output = Scenario 1, output default_counted
 if _scenario output =  Scenario 2, output default_system + default_outside_tolerance_qty
 if _scenario output =  Scenario 3, output default_adjusted_with_constraint
 if _scenario output =  Scenario 4, output default_adjusted_with_constraint and trigger group header for investigate
-eligible_for_ST01_logic = "Yes" if Type is Unsecured, location is the Default, Allocation Category is Available or Available upon request, and ST01 <> 0, else "No"
-unbalanced_secondary = "Yes" of residual_unbalanced is negative
-scenario_1 = TRUE if ST01 logic and secondary variances do not apply, else FALSE
-scenario_2 = TRUE if ST01 logic applies, but secondary variances do not, else FALSE
-scenario_3 = TRUE if ST01 logic does not apply, but unbalanced secondary does
-scenario_4 = TRUE if ST01 logic and unbalanced secondary both apply
-_scenario = checks to determine which scenario is TRUE
-if scenario_1 = TRUE, then output ""Scenario 1""
-if scenario_2 = TRUE, then output ""Scenario 2""
-if scenario_3 = TRUE, then output ""Scenario 3""
-if scenario_4 = TRUE, then output ""Scenario 4"
