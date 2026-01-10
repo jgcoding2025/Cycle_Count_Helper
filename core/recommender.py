@@ -66,8 +66,6 @@ def apply_recommendations(
     df["IsSecondary"] = "N"
     df["RecommendationType"] = ""
     df["RecommendedQty"] = 0.0
-    df["FromLocation"] = ""
-    df["ToLocation"] = ""
     df["RemainingAdjustmentQty"] = 0.0
     df["SetLocationQtyTo"] = pd.NA
     df["Reason"] = ""
@@ -77,38 +75,19 @@ def apply_recommendations(
 
     group_rows = []
 
-    # Group by Whs/Item/Lot
-    gcols = ["Whs", "Item", "Batch/lot"]
-    for (whs, item, lot), g in df.groupby(gcols, sort=False):
+    # Group by Item
+    gcols = ["Item"]
+    for (item), g in df.groupby(gcols, sort=False):
         g = g.copy()
 
-        # ---- Warehouse guardrail ----
-        if str(whs).strip() != "50":
-            idx = g.index
-            df.loc[idx, "RecommendationType"] = "NO_ACTION"
-            df.loc[idx, "Reason"] = "Warehouse is not 50; this tool does not auto-recommend transfers/default updates outside WHS 50."
-            df.loc[idx, "Confidence"] = "High"
-            df.loc[idx, "Severity"] = 0
-            df.loc[idx, "GroupHeadline"] = "No action (non-WHS 50)"
+        # Group is by Item (warehouse ignored). Keep summary values for reporting/UI.
+        whs_summary = "MULTI" if g["Whs"].nunique() > 1 else str(g["Whs"].iloc[0])
 
-            group_rows.append({
-                "Whs": whs,
-                "Item": item,
-                "Batch/lot": lot,
-                "DefaultLocation": str(g["DefaultLocation"].dropna().astype(str).head(1).values[0]) if (g["DefaultLocation"] != "").any() else "",
-                "SystemTotal": float(g["SystemQty"].sum()),
-                "CountTotal": float(g["CountQty"].sum()),
-                "NetVariance": float(g["VarianceQty"].sum()),
-                "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
-                "DefaultSystemAfter": None,
-                "DefaultCount": None,
-                "Flags": "NonWHS50",
-                "RecommendationHeadline": "No action (non-WHS 50)",
-                "RemainingAdjustmentQty": 0.0,
-                "Confidence": "High",
-                "Severity": 0,
-            })
-            continue
+        if "Batch/lot" in g.columns:
+            lot_summary = str(g["Batch/lot"].iloc[0])
+        else:
+            lot_summary = ""
+
 
         # Flags
         flags = {
@@ -116,6 +95,35 @@ def apply_recommendations(
             "secured_variance": False,
             "default_empty": False,
         }
+
+        # Hard stop: if any row is missing location master, do not auto-recommend adjustments
+        if flags["missing_master"]:
+            idx = g.index
+            df.loc[idx, "RecommendationType"] = "INVESTIGATE"
+            df.loc[idx, "Reason"] = "Missing Location Master = Y for at least one row in this group; verify master data before any adjustments."
+            df.loc[idx, "Confidence"] = "Low"
+            df.loc[idx, "Severity"] = 100
+            df.loc[idx, "GroupHeadline"] = "Investigate: location not in master"
+
+            group_rows.append({
+                "Whs": whs_summary,
+                "Item": item,
+                "Batch/lot": lot_summary,
+                "DefaultLocation": str(g["DefaultLocation"][g["DefaultLocation"] != ""].head(1).values[0]) if (g["DefaultLocation"] != "").any() else "",
+                "SystemTotal": float(g["SystemQty"].sum()),
+                "CountTotal": float(g["CountQty"].sum()),
+                "NetVariance": float(g["VarianceQty"].sum()),
+                "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
+                "DefaultSystemAfter": None,
+                "DefaultCount": None,
+                "Flags": "MissingMaster",
+                "RecommendationHeadline": "Investigate: location not in master",
+                "RemainingAdjustmentQty": 0.0,
+                "Confidence": "Low",
+                "Severity": 100,
+            })
+            continue
+
 
         # Determine default location (authoritative)
         default_loc = ""
@@ -135,7 +143,8 @@ def apply_recommendations(
             df.loc[idx, "GroupHeadline"] = headline
 
             group_rows.append({
-                "Whs": whs, "Item": item, "Batch/lot": lot,
+                "Whs": whs_summary,
+                "Item": item, "Batch/lot": lot_summary,
                 "DefaultLocation": "",
                 "SystemTotal": float(g["SystemQty"].sum()),
                 "CountTotal": float(g["CountQty"].sum()),
@@ -177,7 +186,8 @@ def apply_recommendations(
             df.loc[idx, "GroupHeadline"] = headline
 
             group_rows.append({
-                "Whs": whs, "Item": item, "Batch/lot": lot,
+                "Whs": whs_summary,
+                "Item": item, "Batch/lot": lot_summary,
                 "DefaultLocation": default_loc,
                 "SystemTotal": float(g["SystemQty"].sum()),
                 "CountTotal": float(g["CountQty"].sum()),
@@ -236,7 +246,14 @@ def apply_recommendations(
                 df.loc[ridx, "Confidence"] = "High"
                 df.loc[ridx, "Severity"] = 0
 
-        # Compute default after adjustments (no transfers in this mode)
+        # Net delta from all non-default, non-ST01 locations (what we're correcting via ADJUSTs)
+        net_secondary_delta = float((secondary["CountQty"] - secondary["SystemQty"]).sum())
+
+        # Balancing adjustment at default so net adjustment = 0
+        # If secondaries total +10, default should be -10
+        balancing_adj = -net_secondary_delta
+
+        # Compute default after adjustments
         default_after = default_system
 
         # Determine remaining adjustment
@@ -257,22 +274,9 @@ def apply_recommendations(
             # allow investigate to be High, but cap auto-fix confidence
             group_conf = _confidence_cap(group_conf, "Med")
 
-        if default_count == 0:
-            # NEW RULE:
-            # For unsecured+available defaults, if any qty exists in ST01, assume the default location may be physically full,
-            # so default showing empty is not an issue.
-            if default_eligible and sys_st01 > 0:
-                default_reason_lines.append(
-                    "Default location shows 0, but ST01 shows inventory. Assume default may be physically full; no default-empty issue."
-                )
-                remaining_adj = 0.0
-
-                # Mark default row(s) as no action (secondary adjustments handled separately)
-                for didx in default_rows.index:
-                    df.loc[didx, "RecommendationType"] = "NO_ACTION"
-                    df.loc[didx, "Reason"] = " ".join(default_reason_lines)
-                    df.loc[didx, "Confidence"] = group_conf
-                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 25)
+            if default_count == 0:
+                flags["default_empty"] = True
+                group_flags_str.append("DefaultCountZero")
 
             else:
                 flags["default_empty"] = True
@@ -292,6 +296,21 @@ def apply_recommendations(
                     df.loc[didx, "Reason"] = "Default counted 0 while system shows inventory; verify on-hand and adjust if empty."
                     df.loc[didx, "Confidence"] = group_conf
                     df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 85)
+            
+            remaining_adj = balancing_adj
+            default_reason_lines.append(
+                f"Balancing default to offset secondary deltas (net zero). "
+                f"Secondary net delta={net_secondary_delta:g}; default adjust={balancing_adj:g}."
+            )
+            if net_secondary_delta != 0:
+                # Use balancing adjustment; do not apply ST01 min/max
+                remaining_adj = balancing_adj
+            else:
+                # Only then use ST01 min/max or direct compare
+                ...
+
+            net_group_adj = net_secondary_delta + remaining_adj
+
 
         else:
             if default_eligible:
@@ -343,7 +362,7 @@ def apply_recommendations(
                     df.loc[didx, "Confidence"] = group_conf
                     df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 0)
 
-        headline = _group_headline(flags, remaining_adj)
+        headline = _group_headline(flags, net_group_adj)
 
         # Write group headline + remaining adjustment into all rows in group for easy filtering
         df.loc[g.index, "GroupHeadline"] = headline
@@ -352,9 +371,9 @@ def apply_recommendations(
         df.loc[g.index, "Severity"] = df.loc[g.index, "Severity"].clip(lower=group_sev)
 
         group_rows.append({
-            "Whs": whs,
+            "Whs": whs_summary,
             "Item": item,
-            "Batch/lot": lot,
+            "Batch/lot": lot_summary,
             "DefaultLocation": default_loc,
             "SystemTotal": float(g["SystemQty"].sum()),
             "CountTotal": float(g["CountQty"].sum()),
