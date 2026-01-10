@@ -1,0 +1,23 @@
+Notes/Definitions:
+
+1. GROUPING
+    a. A “group” is one unique item (across all warehouses/locations).
+    b. ST01 is treated as its own location row in the group, but it is excluded from secondary variance math.
+2. LOCATION CLASSES
+    a. Default: the item’s designated default location row.
+    b. Secondary: every location row that is not default and not ST01.
+    c. ST01: special holding location; excluded from secondary variance calculation.
+3. ST01 STATES
+    a. Unsecured: inventory offlined in the system that may still physically be in default (timing/process).
+    b. Secured: inventory that has been physically pulled and is in ST01.
+4. ST01 REFERENCES
+    a. ST01 is never physically counted; assume it is correct.
+    b. ST01 may only be referenced when ST01 system qty <> 0
+    c. If ST01 = 0, the system must not suggest checking ST01 or use ST01 in any reasoning.
+5. EXPECTED PHYSICAL RANGE (for tolerance only)
+    (Used only to compute default_outside_tolerance_qty when ST01 logic is eligible.)
+    a. expected_physical_min = default_system
+    b. expected_physical_max = default_system + ST01
+6. Definitions
+    a. “exists an Available / Available upon request secondary with excess stock”:
+        Within the item group, at least one Secondary row (non-default, non-ST01) has Allocation Category = Available or Available upon request and (count − system) > 0
