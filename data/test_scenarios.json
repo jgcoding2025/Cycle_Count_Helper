@@ -2,24 +2,24 @@
   "scenarios": [
     {
       "name": "Scenario 1 — No ST01 logic, balanced",
-      "purpose": "ST01=0 and no secondary imbalance; default should follow counted qty.",
-      "expected_output": "Scenario 1. Default SetLocationQtyTo = counted qty. No Investigate. No ST01 MIN/MAX shown.",
+      "purpose": "ST01 = 0 and no secondary location imbalance; default should follow counted qty.",
+      "expected_output": "Default system qty and count are equal. No Investigate. No ST01 MIN/MAX shown. No action required.",
       "default": {
         "warehouse": "50",
-        "default_location": "1C1A",
+        "default_location": "3A1A",
         "system_qty": 25,
         "counted_qty": 25,
         "st01_system_qty": 0
       },
       "secondaries": [
-        { "warehouse": "50", "location": "ELEC", "system_qty": 10, "counted_qty": 10 }
+        { "warehouse": "50", "location": "OS16D1", "system_qty": 10, "counted_qty": 10 }
       ]
     },
 
     {
       "name": "Scenario 2 — ST01 eligible, count within MIN/MAX",
       "purpose": "ST01 logic active but count is plausible; default should stay at system.",
-      "expected_output": "Scenario 2. Default SetLocationQtyTo = system qty. Reason shows ST01 MIN/MAX and 'within range'.",
+      "expected_output": "Scenario 2. Default count updated to system qty. Reason: Within tolerance of ST01 MIN/MAX.",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -28,7 +28,7 @@
         "st01_system_qty": 10
       },
       "secondaries": [
-        { "warehouse": "50", "location": "ELEC", "system_qty": 5, "counted_qty": 5 }
+        { "warehouse": "50", "location": "HPM2D", "system_qty": 5, "counted_qty": 5 }
       ]
     },
 
@@ -44,7 +44,7 @@
         "st01_system_qty": 5
       },
       "secondaries": [
-        { "warehouse": "50", "location": "ELEC", "system_qty": 8, "counted_qty": 6 }
+        { "warehouse": "50", "location": "HPM2D", "system_qty": 8, "counted_qty": 6 }
       ]
     },
 
@@ -60,7 +60,7 @@
         "st01_system_qty": 10
       },
       "secondaries": [
-        { "warehouse": "50", "location": "ELEC", "system_qty": 5, "counted_qty": 5 },
+        { "warehouse": "50", "location": "HPM2D", "system_qty": 5, "counted_qty": 5 },
         { "warehouse": "50", "location": "CONT1", "system_qty": 3, "counted_qty": 3 }
       ]
     },

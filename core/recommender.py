@@ -385,25 +385,56 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
                         f"Recommend: Investigate residual imbalance of approx. {abs(residual_unbalanced):g} (ST01 is 0, so do not use ST01 in reasoning)."
                     )
 
-        # Default reason text (always explain scenario + math)
-        reason_lines = [
-            f"Scenario={scenario}.",
-            f"Secondary net adjustments Σ(count-system)={net_secondary_adjustments:g}.",
-            f"Default balancing: default_adjusted_noconstraint={default_adjusted_noconstraint:g}, "
-            f"default_adjusted_with_constraint={default_adjusted_with_constraint:g}, "
-            f"residual_unbalanced={residual_unbalanced:g}.",
-        ]
-        if eligible_for_st01_logic:
-            reason_lines.append(
-                f"ST01 eligible: default_system={default_system:g}, ST01={st01_qty:g}, "
-                f"default_outside_tolerance_qty={default_outside_tolerance_qty:g}."
-            )
-        if investigate and reasons:
-            reason_lines.append("Investigate triggers: " + " ".join(reasons))
-        if guidance:
-            reason_lines.append(" ".join(guidance))
+        # -----------------------------
+        # Concise Reason text
+        # - Always show ST01 MIN/MAX when ST01 != 0
+        # -----------------------------
+        reason_parts: list[str] = []
 
-        df.loc[default_rows.index, "Reason"] = " ".join(reason_lines)
+        # 1) Scenario + basic decision
+        reason_parts.append(f"{scenario} → Default set to {float(default_set_to):g} (System {default_system:g}, Count {default_counted:g}).")
+
+        # 2) Secondary summary
+        # (net_secondary_adjustments is Σ(count-system) over secondaries)
+        if not secondary_rows.empty:
+            reason_parts.append(f"Secondaries net Δ = {net_secondary_adjustments:g}.")
+        else:
+            reason_parts.append("No secondary locations.")
+
+        # 3) ST01 MIN/MAX always when ST01 has qty
+        if st01_qty != 0:
+            expected_min = default_system
+            expected_max = default_system + st01_qty
+            # Add a short note if count is outside the plausible band
+            if default_counted < expected_min:
+                tol_note = f"Below MIN by {expected_min - default_counted:g}."
+            elif default_counted > expected_max:
+                tol_note = f"Above MAX by {default_counted - expected_max:g}."
+            else:
+                tol_note = "Count is within range."
+            reason_parts.append(f"ST01 range: MIN {expected_min:g} / MAX {expected_max:g} (ST01 {st01_qty:g}). {tol_note}")
+
+        # 4) Balancing math (short)
+        # Only show the constraint line if it matters (Scenario 3/4 or residual exists)
+        if scenario in {"Scenario 3", "Scenario 4"} or residual_unbalanced != 0:
+            reason_parts.append(
+                f"Balancing: Default target = {default_adjusted_noconstraint:g} → constrained to {default_adjusted_with_constraint:g} (residual {residual_unbalanced:g})."
+            )
+
+        # 5) Eligibility note (short, only if ST01 exists)
+        if st01_qty != 0:
+            if eligible_for_st01_logic:
+                reason_parts.append("ST01 logic applied ✅")
+            else:
+                reason_parts.append("ST01 logic NOT eligible (shown for plausibility only).")
+
+        # 6) Investigate + guidance
+        if investigate and reasons:
+            reason_parts.append("INVESTIGATE: " + " ".join(reasons))
+        if guidance:
+            reason_parts.append("NEXT: " + " ".join(guidance))
+
+        df.loc[default_rows.index, "Reason"] = " | ".join(reason_parts)
 
         # Also stamp scenario/tags onto all rows in group for auditing/filtering
         df.loc[idx_all, "_eligible_for_ST01_logic"] = "Yes" if eligible_for_st01_logic else "No"
