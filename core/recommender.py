@@ -15,21 +15,21 @@ def _confidence_cap(conf: str, cap: str) -> str:
     return inv[min(order.get(conf, 1), order.get(cap, 1))]
 
 
-def _group_headline(flags: dict, remaining_adj: float) -> str:
+def _group_headline(flags: dict, net_group_adj: float, has_adjustments: bool) -> str:
     if flags.get("missing_master"):
         return "Investigate: location not in master"
     if flags.get("secured_variance"):
         return "Investigate: secured location variance"
-    if flags.get("default_empty"):
-        return "Action needed: default counted zero (verify on-hand)"
 
-    if remaining_adj != 0:
-        direction = "up" if remaining_adj > 0 else "down"
-        qty = abs(remaining_adj)
+    if abs(net_group_adj) > 0:
+        direction = "up" if net_group_adj > 0 else "down"
+        return f"Adjust {direction} {abs(net_group_adj):g}"
 
-        return f"Adjust {direction} {qty:g}"
+    if has_adjustments:
+        return "Adjust (Net 0)"
 
     return "No variance"
+
 
 def apply_recommendations(
     review_lines: pd.DataFrame,
@@ -67,7 +67,11 @@ def apply_recommendations(
     df["RecommendationType"] = ""
     df["RecommendedQty"] = 0.0
     df["RemainingAdjustmentQty"] = 0.0
-    df["SetLocationQtyTo"] = pd.NA
+    # Default: set-to = counted qty (trusted physical)
+    df["SetLocationQtyTo"] = pd.to_numeric(df["CountQty"], errors="coerce")
+
+    # ST01 is never adjusted → leave blank
+    df.loc[df["Location"] == "ST01", "SetLocationQtyTo"] = pd.NA
     df["Reason"] = ""
     df["Confidence"] = "Med"
     df["Severity"] = 0
@@ -253,8 +257,7 @@ def apply_recommendations(
         # If secondaries total +10, default should be -10
         balancing_adj = -net_secondary_delta
 
-        # Compute default after adjustments
-        default_after = default_system
+        remaining_adj = 0.0
 
         # Determine remaining adjustment
         remaining_adj = 0.0
@@ -268,85 +271,90 @@ def apply_recommendations(
             group_sev = max(group_sev, 100)
             group_conf = _confidence_cap(group_conf, "Med")
 
-        if flags["secured_variance"]:
+        # If secured variance exists, do NOT auto-adjust (policy decision).
+        if flags.get("secured_variance"):
             group_flags_str.append("SecuredVariance")
             group_sev = max(group_sev, 95)
-            # allow investigate to be High, but cap auto-fix confidence
             group_conf = _confidence_cap(group_conf, "Med")
 
-            if default_count == 0:
-                flags["default_empty"] = True
-                group_flags_str.append("DefaultCountZero")
+            for i in g.index:
+                # If you only want secured locations investigated, scope this to those rows.
+                df.loc[i, "RecommendationType"] = "INVESTIGATE"
+                df.loc[i, "Reason"] = "Secured location variance present; investigate before adjusting."
+                df.loc[i, "Confidence"] = group_conf
+                df.loc[i, "Severity"] = max(df.loc[i, "Severity"], 95)
 
-            else:
-                flags["default_empty"] = True
-                group_flags_str.append("DefaultEmpty")
-                group_sev = max(group_sev, 85)
-                group_conf = _confidence_cap(group_conf, "Med")
-
-                default_reason_lines.append(
-                    f"Default counted 0 with system {default_system:g}; verify on-hand and adjust down if empty."
-                )
-                # No min/max enforcement when default is empty; do not propose adjustment here.
-                remaining_adj = 0.0
-
-                # Mark default row(s)
-                for didx in default_rows.index:
-                    df.loc[didx, "RecommendationType"] = "INVESTIGATE"
-                    df.loc[didx, "Reason"] = "Default counted 0 while system shows inventory; verify on-hand and adjust if empty."
-                    df.loc[didx, "Confidence"] = group_conf
-                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 85)
-            
-            remaining_adj = balancing_adj
-            default_reason_lines.append(
-                f"Balancing default to offset secondary deltas (net zero). "
-                f"Secondary net delta={net_secondary_delta:g}; default adjust={balancing_adj:g}."
-            )
-            if net_secondary_delta != 0:
-                # Use balancing adjustment; do not apply ST01 min/max
-                remaining_adj = balancing_adj
-            else:
-                # Only then use ST01 min/max or direct compare
-                ...
-
-            net_group_adj = net_secondary_delta + remaining_adj
-
+            remaining_adj = 0.0
 
         else:
-            if default_eligible:
-                # Apply min/max with ST01, but only on default (and only when default_count > 0 which is true here)
-                min_expected = default_after
-                max_expected = default_after + sys_st01
+            # Priority 1: balancing when secondary variance exists (net zero rule)
+            if net_secondary_delta != 0:
+                # Desired default adjustment to offset secondaries
+                desired_default_adj = -net_secondary_delta
 
-                default_reason_lines.append("Applied ST01 min/max rule on default (unsecured+available).")
-                default_reason_lines.append(f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}.")
+                # Cap: default cannot be reduced below 0
+                # Min adjustment is -default_system (brings system down to zero)
+                min_default_adj = -float(default_system)
+                remaining_adj = max(desired_default_adj, min_default_adj)
 
-                if default_count < min_expected:
-                    remaining_adj = -(min_expected - default_count)
-                    default_reason_lines.append("Default below MIN; adjust down remaining shortage.")
-                elif default_count > max_expected:
-                    remaining_adj = +(default_count - max_expected)
-                    default_reason_lines.append("Default above MAX; adjust up remaining overage.")
-                else:
-                    remaining_adj = 0.0
-                    default_reason_lines.append("Default within expected range; no adjustment required.")
+                net_group_adj = net_secondary_delta + remaining_adj
 
+                default_reason_lines.append(
+                    f"Balancing default to offset secondary changes. "
+                    f"Secondary net changes={net_secondary_delta:g}; desired default adjust={desired_default_adj:g}. "
+                    f"Capped default adjust at {remaining_adj:g} to avoid negative location qty."
+                )
+
+                if abs(net_group_adj) > 0 and sys_st01 > 0:
+                    default_reason_lines.append(
+                        f"Net adjustment is {net_group_adj:g}. Alt: Check ST01. "
+                        f"Possible ST01 offline/relief activity from default could explain the difference."
+                    )
+
+            # Priority 2: only if NO secondary variance, consider ST01/direct compare
             else:
-                # Not eligible => compare directly
-                default_reason_lines.append("Default not eligible for ST01 min/max; compared directly to system.")
-                remaining_adj = default_count - default_after
-                if remaining_adj != 0:
-                    if remaining_adj > 0:
-                        default_reason_lines.append("Default count above system; adjust up.")
+                if default_eligible:
+                    min_expected = default_system
+                    max_expected = default_system + sys_st01
+
+                    if default_count < min_expected:
+                        remaining_adj = -(min_expected - default_count)
+                        default_reason_lines.append(
+                            f"Applied ST01 min/max rule on default (unsecured+available). "
+                            f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}. "
+                            f"Default below MIN; adjust down remaining shortage."
+                        )
+                    elif default_count > max_expected:
+                        remaining_adj = +(default_count - max_expected)
+                        default_reason_lines.append(
+                            f"Applied ST01 min/max rule on default (unsecured+available). "
+                            f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}. "
+                            f"Default above MAX; adjust up remaining excess."
+                        )
                     else:
-                        default_reason_lines.append("Default count below system; adjust down.")
+                        remaining_adj = 0.0
+                        default_reason_lines.append(
+                            f"Applied ST01 min/max rule on default (unsecured+available). "
+                            f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}. "
+                            f"Default within range; no default adjustment."
+                        )
                 else:
-                    default_reason_lines.append("Default matches system; no adjustment required.")
+                    # direct compare
+                    if default_count != default_system:
+                        remaining_adj = default_count - default_system
+                        direction = "up" if remaining_adj > 0 else "down"
+                        default_reason_lines.append(
+                            f"Default {direction} needed: system {default_system:g}, count {default_count:g}."
+                        )
+                    else:
+                        remaining_adj = 0.0
+                        default_reason_lines.append("Default matches system; no adjustment.")
+
 
             if remaining_adj != 0:
                 group_sev = max(group_sev, 80)
 
-        # Mark default row(s)
+            # Mark default row(s)
             for didx in default_rows.index:
                 if remaining_adj != 0:
                     df.loc[didx, "RecommendationType"] = "ADJUST"
@@ -362,13 +370,18 @@ def apply_recommendations(
                     df.loc[didx, "Confidence"] = group_conf
                     df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 0)
 
-        headline = _group_headline(flags, net_group_adj)
+        has_adjustments = (df.loc[g.index, "RecommendationType"] == "ADJUST").any()
+
+        net_group_adj = net_secondary_delta + remaining_adj
+        headline = _group_headline(flags, net_group_adj, has_adjustments)
 
         # Write group headline + remaining adjustment into all rows in group for easy filtering
         df.loc[g.index, "GroupHeadline"] = headline
         df.loc[g.index, "RemainingAdjustmentQty"] = remaining_adj
         df.loc[g.index, "Confidence"] = df.loc[g.index, "Confidence"].replace("", group_conf)
         df.loc[g.index, "Severity"] = df.loc[g.index, "Severity"].clip(lower=group_sev)
+
+        default_after = default_system + remaining_adj
 
         group_rows.append({
             "Whs": whs_summary,
