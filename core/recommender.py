@@ -3,50 +3,109 @@ from __future__ import annotations
 import pandas as pd
 
 
-def _is_default_eligible(loc_type: str | None, alloc_cat: str | None) -> bool:
-    if loc_type is None or alloc_cat is None:
-        return False
-    return str(loc_type).strip().lower() == "unsecured" and str(alloc_cat).strip().lower() == "available"
+# -----------------------------
+# Helpers
+# -----------------------------
+def _norm_str(x) -> str:
+    if x is None or pd.isna(x):
+        return ""
+    return str(x).strip()
 
 
-def _confidence_cap(conf: str, cap: str) -> str:
-    order = {"Low": 0, "Med": 1, "High": 2}
-    inv = {v: k for k, v in order.items()}
-    return inv[min(order.get(conf, 1), order.get(cap, 1))]
+def _norm_upper(x) -> str:
+    return _norm_str(x).upper()
 
 
-def _group_headline(flags: dict, net_group_adj: float, has_adjustments: bool) -> str:
-    if flags.get("missing_master"):
-        return "Investigate: location not in master"
-    if flags.get("secured_variance"):
-        return "Investigate: secured location variance"
+def _norm_lower(x) -> str:
+    return _norm_str(x).lower()
 
-    if abs(net_group_adj) > 0:
-        direction = "up" if net_group_adj > 0 else "down"
-        return f"Adjust {direction} {abs(net_group_adj):g}"
 
+def _to_num(x) -> float:
+    # Safe numeric conversion (NaN -> 0)
+    try:
+        v = pd.to_numeric(x, errors="coerce")
+        if pd.isna(v):
+            return 0.0
+        return float(v)
+    except Exception:
+        return 0.0
+
+
+def _alloc_is_available_or_upr(alloc_cat: str | None) -> bool:
+    """
+    Business rule uses: Allocation Category is Available OR Available upon request
+    (case-insensitive)
+    """
+    a = _norm_lower(alloc_cat)
+    return a in {"available", "available upon request"}
+
+
+def _default_is_unsecured(loc_type: str | None) -> bool:
+    return _norm_lower(loc_type) == "unsecured"
+
+
+def _eligible_for_st01_logic(
+    default_loc_type: str | None,
+    default_alloc_cat: str | None,
+    st01_qty: float,
+) -> bool:
+    # Step C.1
+    return _default_is_unsecured(default_loc_type) and _alloc_is_available_or_upr(default_alloc_cat) and (st01_qty != 0)
+
+
+def _scenario_label(eligible_for_st01: bool, unbalanced_secondary: bool) -> str:
+    # Step E
+    if (not eligible_for_st01) and (not unbalanced_secondary):
+        return "Scenario 1"
+    if eligible_for_st01 and (not unbalanced_secondary):
+        return "Scenario 2"
+    if (not eligible_for_st01) and unbalanced_secondary:
+        return "Scenario 3"
+    return "Scenario 4"
+
+
+def _group_headline(investigate: bool, has_adjustments: bool, net_group_variance: float) -> str:
+    """
+    Simple headline that stays compatible with UI filtering.
+    We prefer:
+      - Investigate (when rules say so)
+      - Adjust (if any location set-to differs from system)
+      - No variance otherwise
+    """
+    if investigate:
+        return "Investigate"
     if has_adjustments:
-        return "Adjust (Net 0)"
-
+        # Optional directional hint
+        if abs(net_group_variance) > 0:
+            direction = "up" if net_group_variance > 0 else "down"
+            return f"Adjust {direction} {abs(net_group_variance):g}"
+        return "Adjust"
     return "No variance"
 
 
-def apply_recommendations(
-    review_lines: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
+    Implements Business Rules (Steps A–H) from business_logic.txt.
+
     Input: Review_Lines dataframe from Step 2 (already enriched with Location Type / Allocation Category)
     Output:
       - updated review_lines with recommendation columns added
-      - empty transfer_suggestions dataframe (transfers are not recommended)
+      - empty transfer_suggestions dataframe (transfers are not system-generated adjustments; only guidance text)
       - group_summary dataframe
     """
 
-    # Ensure expected columns exist
     required = [
-        "Whs", "Item", "Batch/lot", "DefaultLocation", "Location",
-        "SystemQty", "CountQty", "VarianceQty",
-        "Location Type", "Allocation Category", "Missing Location Master",
+        "Whs",
+        "Item",
+        "Batch/lot",
+        "DefaultLocation",
+        "Location",
+        "SystemQty",
+        "CountQty",
+        "VarianceQty",
+        "Location Type",
+        "Allocation Category",
+        "Missing Location Master",
     ]
     missing = [c for c in required if c not in review_lines.columns]
     if missing:
@@ -54,355 +113,365 @@ def apply_recommendations(
 
     df = review_lines.copy()
 
-    # Normalize key fields for grouping
-    df["Whs"] = df["Whs"].astype("string").str.strip()
-    df["Item"] = df["Item"].astype("string").str.strip()
-    df["Batch/lot"] = df["Batch/lot"].astype("string").fillna("").str.strip()
-    df["Location"] = df["Location"].astype("string").str.strip().str.upper()
-    df["DefaultLocation"] = df["DefaultLocation"].astype("string").fillna("").str.strip().str.upper()
+    # Normalize grouping keys
+    df["Whs"] = df["Whs"].astype("string").map(_norm_str)
+    df["Item"] = df["Item"].astype("string").map(_norm_str)
+    df["Batch/lot"] = df["Batch/lot"].astype("string").fillna("").map(_norm_str)
+    df["Location"] = df["Location"].astype("string").map(_norm_upper)
+    df["DefaultLocation"] = df["DefaultLocation"].astype("string").fillna("").map(_norm_upper)
 
-    # Add placeholders for output columns
+    # Ensure numeric columns
+    df["SystemQty"] = pd.to_numeric(df["SystemQty"], errors="coerce").fillna(0.0)
+    df["CountQty"] = pd.to_numeric(df["CountQty"], errors="coerce").fillna(0.0)
+    df["VarianceQty"] = pd.to_numeric(df["VarianceQty"], errors="coerce").fillna(0.0)
+
+    # Output columns expected by UI
     df["IsDefault"] = "N"
     df["IsSecondary"] = "N"
-    df["RecommendationType"] = ""
-    df["RecommendedQty"] = 0.0
-    df["RemainingAdjustmentQty"] = 0.0
-    # Default: set-to = counted qty (trusted physical)
-    df["SetLocationQtyTo"] = pd.to_numeric(df["CountQty"], errors="coerce")
 
-    # ST01 is never adjusted → leave blank
-    df.loc[df["Location"] == "ST01", "SetLocationQtyTo"] = pd.NA
+    df["RecommendationType"] = ""
+    df["SetLocationQtyTo"] = None  # will be set per rules
     df["Reason"] = ""
-    df["Confidence"] = "Med"
+
+    df["RecommendedQty"] = 0.0
+    df["RemainingAdjustmentQty"] = 0.0  # we will use this to surface residual_unbalanced at group level
+
+    df["Confidence"] = "High"
     df["Severity"] = 0
     df["GroupHeadline"] = ""
 
-    group_rows = []
+    # Extra traceability columns (won't break UI; helps auditing)
+    df["_eligible_for_ST01_logic"] = ""
+    df["_unbalanced_secondary"] = ""
+    df["_scenario"] = ""
+    df["_residual_unbalanced"] = 0.0
+    df["_net_secondary_adjustments"] = 0.0
+    df["_default_adjusted_noconstraint"] = 0.0
+    df["_default_adjusted_with_constraint"] = 0.0
+    df["_default_outside_tolerance_qty"] = 0.0
+    df["_investigate"] = ""
 
-    # Group by Item
-    gcols = ["Item"]
-    for (item), g in df.groupby(gcols, sort=False):
+    group_rows: list[dict] = []
+
+    # -----------------------------
+    # Step A — Group by Item (ignore warehouse differences)
+    # -----------------------------
+    for item, g in df.groupby(["Item"], sort=False):
         g = g.copy()
+        idx_all = g.index
 
-        # Group is by Item (warehouse ignored). Keep summary values for reporting/UI.
         whs_summary = "MULTI" if g["Whs"].nunique() > 1 else str(g["Whs"].iloc[0])
+        lot_summary = str(g["Batch/lot"].iloc[0]) if "Batch/lot" in g.columns else ""
 
-        if "Batch/lot" in g.columns:
-            lot_summary = str(g["Batch/lot"].iloc[0])
+        # Hard stop: Missing location master -> Investigate, no auto
+        if (g["Missing Location Master"] == "Y").any():
+            df.loc[idx_all, "RecommendationType"] = "INVESTIGATE"
+            df.loc[idx_all, "GroupHeadline"] = "Investigate"
+            df.loc[idx_all, "Reason"] = (
+                "Missing Location Master = Y for at least one row in this item group; verify master data before adjustments."
+            )
+            df.loc[idx_all, "Confidence"] = "Low"
+            df.loc[idx_all, "Severity"] = 100
+            df.loc[idx_all, "_investigate"] = "Yes"
+            group_rows.append(
+                {
+                    "Whs": whs_summary,
+                    "Item": item,
+                    "Batch/lot": lot_summary,
+                    "DefaultLocation": "",
+                    "SystemTotal": float(g["SystemQty"].sum()),
+                    "CountTotal": float(g["CountQty"].sum()),
+                    "NetVariance": float(g["VarianceQty"].sum()),
+                    "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
+                    "Scenario": "",
+                    "EligibleForST01Logic": "",
+                    "UnbalancedSecondary": "",
+                    "ResidualUnbalanced": 0.0,
+                    "RecommendationHeadline": "Investigate",
+                    "Reason": "Missing Location Master in group",
+                }
+            )
+            continue
+
+        # Determine default location (authoritative)
+        defaults = [d for d in g["DefaultLocation"].unique().tolist() if _norm_upper(d) != ""]
+        default_loc = defaults[0] if defaults else ""
+
+        if default_loc == "":
+            df.loc[idx_all, "RecommendationType"] = "INVESTIGATE"
+            df.loc[idx_all, "GroupHeadline"] = "Investigate"
+            df.loc[idx_all, "Reason"] = "DefaultLocation is blank; cannot compute default vs secondary for this item group."
+            df.loc[idx_all, "Confidence"] = "Low"
+            df.loc[idx_all, "Severity"] = 90
+            df.loc[idx_all, "_investigate"] = "Yes"
+            group_rows.append(
+                {
+                    "Whs": whs_summary,
+                    "Item": item,
+                    "Batch/lot": lot_summary,
+                    "DefaultLocation": "",
+                    "SystemTotal": float(g["SystemQty"].sum()),
+                    "CountTotal": float(g["CountQty"].sum()),
+                    "NetVariance": float(g["VarianceQty"].sum()),
+                    "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
+                    "Scenario": "",
+                    "EligibleForST01Logic": "",
+                    "UnbalancedSecondary": "",
+                    "ResidualUnbalanced": 0.0,
+                    "RecommendationHeadline": "Investigate",
+                    "Reason": "DefaultLocation missing",
+                }
+            )
+            continue
+
+        # Identify rows by class: Default / Secondary / ST01
+        is_st01 = g["Location"] == "ST01"
+        is_default = g["Location"] == default_loc
+        is_secondary = (~is_st01) & (~is_default)
+
+        df.loc[g.index[is_default], "IsDefault"] = "Y"
+        df.loc[g.index[is_secondary], "IsSecondary"] = "Y"
+
+        # Compute ST01 system qty (Step A note: ST01 excluded from secondary variance math)
+        st01_qty = float(g.loc[is_st01, "SystemQty"].sum())
+
+        # Pull default row values
+        default_rows = g.loc[is_default]
+        if default_rows.empty:
+            df.loc[idx_all, "RecommendationType"] = "INVESTIGATE"
+            df.loc[idx_all, "GroupHeadline"] = "Investigate"
+            df.loc[idx_all, "Reason"] = f"DefaultLocation '{default_loc}' not present as a row in recount lines for this item."
+            df.loc[idx_all, "Confidence"] = "Low"
+            df.loc[idx_all, "Severity"] = 90
+            df.loc[idx_all, "_investigate"] = "Yes"
+            group_rows.append(
+                {
+                    "Whs": whs_summary,
+                    "Item": item,
+                    "Batch/lot": lot_summary,
+                    "DefaultLocation": default_loc,
+                    "SystemTotal": float(g["SystemQty"].sum()),
+                    "CountTotal": float(g["CountQty"].sum()),
+                    "NetVariance": float(g["VarianceQty"].sum()),
+                    "SysST01": st01_qty,
+                    "Scenario": "",
+                    "EligibleForST01Logic": "",
+                    "UnbalancedSecondary": "",
+                    "ResidualUnbalanced": 0.0,
+                    "RecommendationHeadline": "Investigate",
+                    "Reason": "Default row missing in recount lines",
+                }
+            )
+            continue
+
+        default_system = float(default_rows["SystemQty"].sum())
+        default_counted = float(default_rows["CountQty"].sum())
+        default_loc_type = default_rows["Location Type"].iloc[0] if "Location Type" in default_rows.columns else None
+        default_alloc_cat = default_rows["Allocation Category"].iloc[0] if "Allocation Category" in default_rows.columns else None
+
+        # -----------------------------
+        # Step A — Secondary adjustments
+        # 1) For every secondary row: set_location_qty_to = count
+        # 2) net_secondary_adjustments = Σ(count − system) over secondaries
+        # -----------------------------
+        secondary_rows = g.loc[is_secondary].copy()
+        if not secondary_rows.empty:
+            df.loc[secondary_rows.index, "SetLocationQtyTo"] = secondary_rows["CountQty"].astype(float)
+            # Recommend ADJUST if it changes anything, else NO_ACTION
+            sec_delta = secondary_rows["CountQty"].astype(float) - secondary_rows["SystemQty"].astype(float)
+            df.loc[secondary_rows.index, "RecommendationType"] = sec_delta.apply(lambda d: "ADJUST" if d != 0 else "NO_ACTION")
+            df.loc[secondary_rows.index, "RecommendedQty"] = sec_delta.abs().astype(float)
+            df.loc[secondary_rows.index, "Reason"] = sec_delta.apply(
+                lambda d: "Secondary set to count." if d != 0 else "Secondary already matches system."
+            )
+        net_secondary_adjustments = float((secondary_rows["CountQty"] - secondary_rows["SystemQty"]).sum()) if not secondary_rows.empty else 0.0
+
+        # ST01 row: blank / excluded (Step F.2)
+        if is_st01.any():
+            df.loc[g.index[is_st01], "SetLocationQtyTo"] = None
+            df.loc[g.index[is_st01], "RecommendationType"] = ""
+            df.loc[g.index[is_st01], "RecommendedQty"] = 0.0
+            df.loc[g.index[is_st01], "Reason"] = "ST01 is never adjusted; excluded from adjustment outputs."
+
+        # -----------------------------
+        # Step B — Default balancing math (always)
+        # -----------------------------
+        default_adjusted_noconstraint = default_system - net_secondary_adjustments
+        default_adjusted_with_constraint = max(default_adjusted_noconstraint, 0.0)
+        residual_unbalanced = default_adjusted_noconstraint - default_adjusted_with_constraint  # negative or 0
+
+        # -----------------------------
+        # Step C — Tags
+        # -----------------------------
+        eligible_for_st01_logic = _eligible_for_st01_logic(default_loc_type, default_alloc_cat, st01_qty)
+        unbalanced_secondary = residual_unbalanced < 0
+
+        # -----------------------------
+        # Step D — ST01 tolerance qty (only meaningful when eligible)
+        # -----------------------------
+        default_outside_tolerance_qty = 0.0
+        if eligible_for_st01_logic:
+            expected_physical_min = default_system
+            expected_physical_max = default_system + st01_qty
+            if default_counted < expected_physical_min:
+                default_outside_tolerance_qty = default_counted - expected_physical_min
+            elif default_counted > expected_physical_max:
+                default_outside_tolerance_qty = default_counted - expected_physical_max
+            else:
+                default_outside_tolerance_qty = 0.0
+
+        # -----------------------------
+        # Step E — Scenario 2x2
+        # -----------------------------
+        scenario = _scenario_label(eligible_for_st01_logic, unbalanced_secondary)
+
+        # -----------------------------
+        # Step F — Final set_location_qty_to outputs (default)
+        # -----------------------------
+        if scenario == "Scenario 1":
+            default_set_to = default_counted
+        elif scenario == "Scenario 2":
+            default_set_to = default_system + default_outside_tolerance_qty
+        elif scenario in {"Scenario 3", "Scenario 4"}:
+            default_set_to = default_adjusted_with_constraint
         else:
-            lot_summary = ""
+            default_set_to = default_counted  # fallback (should not happen)
 
+        # Write default row outputs
+        df.loc[default_rows.index, "SetLocationQtyTo"] = float(default_set_to)
 
-        # Flags
-        flags = {
-            "missing_master": (g["Missing Location Master"] == "Y").any(),
-            "secured_variance": False,
-            "default_empty": False,
-        }
+        # RecommendationType for default based on whether it changes system qty
+        default_delta = float(default_set_to) - float(default_system)
+        df.loc[default_rows.index, "RecommendationType"] = "ADJUST" if default_delta != 0 else "NO_ACTION"
+        df.loc[default_rows.index, "RecommendedQty"] = abs(default_delta)
 
-        # Hard stop: if any row is missing location master, do not auto-recommend adjustments
-        if flags["missing_master"]:
-            idx = g.index
-            df.loc[idx, "RecommendationType"] = "INVESTIGATE"
-            df.loc[idx, "Reason"] = "Missing Location Master = Y for at least one row in this group; verify master data before any adjustments."
-            df.loc[idx, "Confidence"] = "Low"
-            df.loc[idx, "Severity"] = 100
-            df.loc[idx, "GroupHeadline"] = "Investigate: location not in master"
+        # -----------------------------
+        # Step G — Investigate triggers + recommended paths forward
+        # -----------------------------
+        investigate = False
+        reasons: list[str] = []
 
-            group_rows.append({
+        # Scenario 4 rule
+        if scenario == "Scenario 4":
+            investigate = True
+            reasons.append("Scenario 4: ST01-eligible AND unbalanced secondary (default would need < 0 to balance; clamped to 0).")
+
+        # Residual/ST01 rule (independent)
+        if (residual_unbalanced != 0) and (st01_qty > 0):
+            investigate = True
+            reasons.append("Residual/ST01 rule: residual_unbalanced ≠ 0 AND ST01 > 0.")
+
+        # Exists an “Available / Available upon request” secondary with excess stock (definition)
+        sec_has_excess_available_or_upr = False
+        if not secondary_rows.empty:
+            sec_has_excess_available_or_upr = bool(
+                (
+                    secondary_rows["Allocation Category"].astype("string").map(_norm_lower).isin(["available", "available upon request"])
+                    & ((secondary_rows["CountQty"] - secondary_rows["SystemQty"]) > 0)
+                ).any()
+            )
+
+        # Guidance text (only mention ST01 if ST01 != 0 per rules)
+        guidance: list[str] = []
+        if investigate:
+            if sec_has_excess_available_or_upr:
+                guidance.append(
+                    f"Recommend: Physically transfer {abs(residual_unbalanced):g} to the Default, then update location count."
+                )
+            else:
+                if st01_qty != 0:
+                    guidance.append(f"Recommend: Check ST01 — may be inflated by approx. {abs(residual_unbalanced):g}.")
+                else:
+                    guidance.append(
+                        f"Recommend: Investigate residual imbalance of approx. {abs(residual_unbalanced):g} (ST01 is 0, so do not use ST01 in reasoning)."
+                    )
+
+        # Default reason text (always explain scenario + math)
+        reason_lines = [
+            f"Scenario={scenario}.",
+            f"Secondary net adjustments Σ(count-system)={net_secondary_adjustments:g}.",
+            f"Default balancing: default_adjusted_noconstraint={default_adjusted_noconstraint:g}, "
+            f"default_adjusted_with_constraint={default_adjusted_with_constraint:g}, "
+            f"residual_unbalanced={residual_unbalanced:g}.",
+        ]
+        if eligible_for_st01_logic:
+            reason_lines.append(
+                f"ST01 eligible: default_system={default_system:g}, ST01={st01_qty:g}, "
+                f"default_outside_tolerance_qty={default_outside_tolerance_qty:g}."
+            )
+        if investigate and reasons:
+            reason_lines.append("Investigate triggers: " + " ".join(reasons))
+        if guidance:
+            reason_lines.append(" ".join(guidance))
+
+        df.loc[default_rows.index, "Reason"] = " ".join(reason_lines)
+
+        # Also stamp scenario/tags onto all rows in group for auditing/filtering
+        df.loc[idx_all, "_eligible_for_ST01_logic"] = "Yes" if eligible_for_st01_logic else "No"
+        df.loc[idx_all, "_unbalanced_secondary"] = "Yes" if unbalanced_secondary else "No"
+        df.loc[idx_all, "_scenario"] = scenario
+        df.loc[idx_all, "_residual_unbalanced"] = float(residual_unbalanced)
+        df.loc[idx_all, "_net_secondary_adjustments"] = float(net_secondary_adjustments)
+        df.loc[idx_all, "_default_adjusted_noconstraint"] = float(default_adjusted_noconstraint)
+        df.loc[idx_all, "_default_adjusted_with_constraint"] = float(default_adjusted_with_constraint)
+        df.loc[idx_all, "_default_outside_tolerance_qty"] = float(default_outside_tolerance_qty)
+        df.loc[idx_all, "_investigate"] = "Yes" if investigate else "No"
+
+        # RemainingAdjustmentQty: surface residual_unbalanced to the UI (0 when balanced)
+        df.loc[idx_all, "RemainingAdjustmentQty"] = float(residual_unbalanced)
+
+        # Confidence/Severity (simple, policy-aligned)
+        if investigate:
+            df.loc[idx_all, "Confidence"] = "Med"
+            df.loc[idx_all, "Severity"] = df.loc[idx_all, "Severity"].clip(lower=85)
+        else:
+            df.loc[idx_all, "Confidence"] = "High"
+            # If there were adjustments, modest severity; else 0
+            set_to_num = pd.to_numeric(df.loc[idx_all, "SetLocationQtyTo"], errors="coerce")
+            sys_num = pd.to_numeric(df.loc[idx_all, "SystemQty"], errors="coerce").fillna(0.0)
+
+            any_adjust = bool(((~set_to_num.isna()) & (set_to_num != sys_num)).any())
+
+            df.loc[idx_all, "Severity"] = df.loc[idx_all, "Severity"].clip(lower=(50 if any_adjust else 0))
+
+        # Group headline
+        has_adjustments = bool(
+            ((df.loc[idx_all, "SetLocationQtyTo"].notna()) & (df.loc[idx_all, "SetLocationQtyTo"].astype(float) != df.loc[idx_all, "SystemQty"].astype(float))).any()
+        )
+
+        # Net group variance is informational: Σ(set-to - system) excluding ST01 (ST01 is NA)
+        non_st01 = df.loc[idx_all].copy()
+        non_st01 = non_st01[non_st01["Location"] != "ST01"]
+        net_group_variance = float(
+            (pd.to_numeric(non_st01["SetLocationQtyTo"], errors="coerce").fillna(0.0) - non_st01["SystemQty"]).sum()
+        )
+
+        df.loc[idx_all, "GroupHeadline"] = _group_headline(investigate, has_adjustments, net_group_variance)
+
+        # Group summary row
+        group_rows.append(
+            {
                 "Whs": whs_summary,
                 "Item": item,
                 "Batch/lot": lot_summary,
-                "DefaultLocation": str(g["DefaultLocation"][g["DefaultLocation"] != ""].head(1).values[0]) if (g["DefaultLocation"] != "").any() else "",
-                "SystemTotal": float(g["SystemQty"].sum()),
-                "CountTotal": float(g["CountQty"].sum()),
-                "NetVariance": float(g["VarianceQty"].sum()),
-                "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
-                "DefaultSystemAfter": None,
-                "DefaultCount": None,
-                "Flags": "MissingMaster",
-                "RecommendationHeadline": "Investigate: location not in master",
-                "RemainingAdjustmentQty": 0.0,
-                "Confidence": "Low",
-                "Severity": 100,
-            })
-            continue
-
-
-        # Determine default location (authoritative)
-        default_loc = ""
-        nonblank_defaults = g["DefaultLocation"][g["DefaultLocation"] != ""].unique()
-        if len(nonblank_defaults) >= 1:
-            # Should be consistent; take first
-            default_loc = str(nonblank_defaults[0])
-        else:
-            # No default location provided => investigate
-            # Mark all rows in group as investigate
-            idx = g.index
-            df.loc[idx, "RecommendationType"] = "INVESTIGATE"
-            df.loc[idx, "Reason"] = "DefaultLocation is blank; cannot reconcile group automatically."
-            df.loc[idx, "Confidence"] = "Low"
-            df.loc[idx, "Severity"] = 100 if flags["missing_master"] else 85
-            headline = "Investigate: default location missing"
-            df.loc[idx, "GroupHeadline"] = headline
-
-            group_rows.append({
-                "Whs": whs_summary,
-                "Item": item, "Batch/lot": lot_summary,
-                "DefaultLocation": "",
-                "SystemTotal": float(g["SystemQty"].sum()),
-                "CountTotal": float(g["CountQty"].sum()),
-                "NetVariance": float(g["VarianceQty"].sum()),
-                "SysST01": float(g.loc[g["Location"] == "ST01", "SystemQty"].sum()),
-                "DefaultSystemAfter": None,
-                "DefaultCount": None,
-                "Flags": "DefaultMissing",
-                "RecommendationHeadline": headline,
-                "RemainingAdjustmentQty": None,
-                "Confidence": "Low",
-                "Severity": int(df.loc[idx, "Severity"].max()),
-            })
-            continue
-
-        # Mark default vs secondary
-        is_default_mask = g["Location"] == default_loc
-        df.loc[g.index[is_default_mask], "IsDefault"] = "Y"
-        df.loc[g.index[~is_default_mask], "IsSecondary"] = "Y"
-
-        # Secured variance flag
-        secured_var = ((g["Location Type"].astype("string").str.strip().str.lower() == "secured") &
-                       (g["VarianceQty"].astype(float) != 0)).any()
-        flags["secured_variance"] = bool(secured_var)
-
-        # Compute ST01 system qty
-        sys_st01 = float(g.loc[g["Location"] == "ST01", "SystemQty"].sum())
-
-        # Identify default row
-        default_rows = g[g["Location"] == default_loc]
-        if default_rows.empty:
-            # Default row missing from recount lines
-            idx = g.index
-            df.loc[idx, "RecommendationType"] = "INVESTIGATE"
-            df.loc[idx, "Reason"] = f"DefaultLocation '{default_loc}' not present in recount lines."
-            df.loc[idx, "Confidence"] = "Low"
-            df.loc[idx, "Severity"] = 85
-            headline = "Investigate: default row missing"
-            df.loc[idx, "GroupHeadline"] = headline
-
-            group_rows.append({
-                "Whs": whs_summary,
-                "Item": item, "Batch/lot": lot_summary,
                 "DefaultLocation": default_loc,
                 "SystemTotal": float(g["SystemQty"].sum()),
                 "CountTotal": float(g["CountQty"].sum()),
                 "NetVariance": float(g["VarianceQty"].sum()),
-                "SysST01": sys_st01,
-                "DefaultSystemAfter": None,
-                "DefaultCount": None,
-                "Flags": "DefaultRowMissing",
-                "RecommendationHeadline": headline,
-                "RemainingAdjustmentQty": None,
-                "Confidence": "Low",
-                "Severity": 85,
-            })
-            continue
+                "SysST01": float(st01_qty),
+                "Scenario": scenario,
+                "EligibleForST01Logic": "Yes" if eligible_for_st01_logic else "No",
+                "UnbalancedSecondary": "Yes" if unbalanced_secondary else "No",
+                "ResidualUnbalanced": float(residual_unbalanced),
+                "NetSecondaryAdjustments": float(net_secondary_adjustments),
+                "DefaultSetTo": float(default_set_to),
+                "Investigate": "Yes" if investigate else "No",
+                "RecommendationHeadline": df.loc[idx_all, "GroupHeadline"].iloc[0],
+                "Guidance": " ".join(guidance) if guidance else "",
+            }
+        )
 
-        default_system = float(default_rows["SystemQty"].sum())
-        default_count = float(default_rows["CountQty"].sum())
-
-        # Default eligibility (from master metadata on that row)
-        default_loc_type = default_rows["Location Type"].iloc[0] if "Location Type" in default_rows.columns else None
-        default_alloc_cat = default_rows["Allocation Category"].iloc[0] if "Allocation Category" in default_rows.columns else None
-        default_eligible = _is_default_eligible(default_loc_type, default_alloc_cat)
-
-        secondary = g[(g["Location"] != default_loc) & (g["Location"] != "ST01")].copy()
-
-        for ridx, row in secondary.iterrows():
-            loc = str(row["Location"])
-            system_qty = float(row["SystemQty"])
-            count_qty = float(row["CountQty"])
-            delta = count_qty - system_qty
-
-            if delta > 0:
-                # Secondary has more physical than system (overage at secondary).
-                qty = float(delta)
-
-                df.loc[ridx, "RecommendationType"] = "ADJUST"
-                df.loc[ridx, "SetLocationQtyTo"] = float(df.loc[ridx, "CountQty"])
-                df.loc[ridx, "RecommendedQty"] = qty
-                df.loc[ridx, "Reason"] = "Secondary > system; adjust up at this location."
-                df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
-                df.loc[ridx, "Severity"] = 80
-            elif delta < 0:
-                # Secondary has less physical than system (shortage at secondary).
-                qty = float(abs(delta))
-
-                df.loc[ridx, "RecommendationType"] = "ADJUST"
-                df.loc[ridx, "SetLocationQtyTo"] = float(df.loc[ridx, "CountQty"])
-                df.loc[ridx, "RecommendedQty"] = qty
-                df.loc[ridx, "Reason"] = "Secondary < system; adjust down at this location."
-                df.loc[ridx, "Confidence"] = "Med" if flags["secured_variance"] else "High"
-                df.loc[ridx, "Severity"] = 90
-            else:
-                # no action for this secondary line
-                df.loc[ridx, "RecommendationType"] = "NO_ACTION"
-                df.loc[ridx, "Reason"] = "Secondary matches system."
-                df.loc[ridx, "Confidence"] = "High"
-                df.loc[ridx, "Severity"] = 0
-
-        # Net delta from all non-default, non-ST01 locations (what we're correcting via ADJUSTs)
-        net_secondary_delta = float((secondary["CountQty"] - secondary["SystemQty"]).sum())
-
-        # Balancing adjustment at default so net adjustment = 0
-        # If secondaries total +10, default should be -10
-        balancing_adj = -net_secondary_delta
-
-        remaining_adj = 0.0
-
-        # Determine remaining adjustment
-        remaining_adj = 0.0
-        default_reason_lines = []
-        group_conf = "High"
-        group_sev = 0
-        group_flags_str = []
-
-        if flags["missing_master"]:
-            group_flags_str.append("MissingMaster")
-            group_sev = max(group_sev, 100)
-            group_conf = _confidence_cap(group_conf, "Med")
-
-        # If secured variance exists, do NOT auto-adjust (policy decision).
-        if flags.get("secured_variance"):
-            group_flags_str.append("SecuredVariance")
-            group_sev = max(group_sev, 95)
-            group_conf = _confidence_cap(group_conf, "Med")
-
-            for i in g.index:
-                # If you only want secured locations investigated, scope this to those rows.
-                df.loc[i, "RecommendationType"] = "INVESTIGATE"
-                df.loc[i, "Reason"] = "Secured location variance present; investigate before adjusting."
-                df.loc[i, "Confidence"] = group_conf
-                df.loc[i, "Severity"] = max(df.loc[i, "Severity"], 95)
-
-            remaining_adj = 0.0
-
-        else:
-            # Priority 1: balancing when secondary variance exists (net zero rule)
-            if net_secondary_delta != 0:
-                # Desired default adjustment to offset secondaries
-                desired_default_adj = -net_secondary_delta
-
-                # Cap: default cannot be reduced below 0
-                # Min adjustment is -default_system (brings system down to zero)
-                min_default_adj = -float(default_system)
-                remaining_adj = max(desired_default_adj, min_default_adj)
-
-                net_group_adj = net_secondary_delta + remaining_adj
-
-                default_reason_lines.append(
-                    f"Balancing default to offset secondary changes. "
-                    f"Secondary net changes={net_secondary_delta:g}; desired default adjust={desired_default_adj:g}. "
-                    f"Capped default adjust at {remaining_adj:g} to avoid negative location qty."
-                )
-
-                if abs(net_group_adj) > 0 and sys_st01 > 0:
-                    default_reason_lines.append(
-                        f"Net adjustment is {net_group_adj:g}. Alt: Check ST01. "
-                        f"Possible ST01 offline/relief activity from default could explain the difference."
-                    )
-
-            # Priority 2: only if NO secondary variance, consider ST01/direct compare
-            else:
-                if default_eligible:
-                    min_expected = default_system
-                    max_expected = default_system + sys_st01
-
-                    if default_count < min_expected:
-                        remaining_adj = -(min_expected - default_count)
-                        default_reason_lines.append(
-                            f"Applied ST01 min/max rule on default (unsecured+available). "
-                            f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}. "
-                            f"Default below MIN; adjust down remaining shortage."
-                        )
-                    elif default_count > max_expected:
-                        remaining_adj = +(default_count - max_expected)
-                        default_reason_lines.append(
-                            f"Applied ST01 min/max rule on default (unsecured+available). "
-                            f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}. "
-                            f"Default above MAX; adjust up remaining excess."
-                        )
-                    else:
-                        remaining_adj = 0.0
-                        default_reason_lines.append(
-                            f"Applied ST01 min/max rule on default (unsecured+available). "
-                            f"MIN={min_expected:g}, MAX={max_expected:g}, DefaultCount={default_count:g}. "
-                            f"Default within range; no default adjustment."
-                        )
-                else:
-                    # direct compare
-                    if default_count != default_system:
-                        remaining_adj = default_count - default_system
-                        direction = "up" if remaining_adj > 0 else "down"
-                        default_reason_lines.append(
-                            f"Default {direction} needed: system {default_system:g}, count {default_count:g}."
-                        )
-                    else:
-                        remaining_adj = 0.0
-                        default_reason_lines.append("Default matches system; no adjustment.")
-
-
-            if remaining_adj != 0:
-                group_sev = max(group_sev, 80)
-
-            # Mark default row(s)
-            for didx in default_rows.index:
-                if remaining_adj != 0:
-                    df.loc[didx, "RecommendationType"] = "ADJUST"
-                    df.loc[didx, "SetLocationQtyTo"] = float(df.loc[didx, "CountQty"])
-                    df.loc[didx, "RemainingAdjustmentQty"] = remaining_adj
-                    df.loc[didx, "RecommendedQty"] = abs(remaining_adj)
-                    df.loc[didx, "Reason"] = " ".join(default_reason_lines)
-                    df.loc[didx, "Confidence"] = group_conf
-                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], group_sev)
-                else:
-                    df.loc[didx, "RecommendationType"] = "NO_ACTION"
-                    df.loc[didx, "Reason"] = " ".join(default_reason_lines)
-                    df.loc[didx, "Confidence"] = group_conf
-                    df.loc[didx, "Severity"] = max(df.loc[didx, "Severity"], 0)
-
-        has_adjustments = (df.loc[g.index, "RecommendationType"] == "ADJUST").any()
-
-        net_group_adj = net_secondary_delta + remaining_adj
-        headline = _group_headline(flags, net_group_adj, has_adjustments)
-
-        # Write group headline + remaining adjustment into all rows in group for easy filtering
-        df.loc[g.index, "GroupHeadline"] = headline
-        df.loc[g.index, "RemainingAdjustmentQty"] = remaining_adj
-        df.loc[g.index, "Confidence"] = df.loc[g.index, "Confidence"].replace("", group_conf)
-        df.loc[g.index, "Severity"] = df.loc[g.index, "Severity"].clip(lower=group_sev)
-
-        default_after = default_system + remaining_adj
-
-        group_rows.append({
-            "Whs": whs_summary,
-            "Item": item,
-            "Batch/lot": lot_summary,
-            "DefaultLocation": default_loc,
-            "SystemTotal": float(g["SystemQty"].sum()),
-            "CountTotal": float(g["CountQty"].sum()),
-            "NetVariance": float(g["VarianceQty"].sum()),
-            "SysST01": sys_st01,
-            "DefaultSystemAfter": float(default_after),
-            "DefaultCount": float(default_count),
-            "Flags": ",".join(group_flags_str) if group_flags_str else "",
-            "RecommendationHeadline": headline,
-            "RemainingAdjustmentQty": float(remaining_adj),
-            "Confidence": group_conf,
-            "Severity": int(group_sev),
-        })
-
-    transfers_df = pd.DataFrame()
-
+    transfers_df = pd.DataFrame()  # system does not emit transfer rows; only guidance text
     group_summary_df = pd.DataFrame(group_rows)
 
     return df, transfers_df, group_summary_df
