@@ -2,8 +2,8 @@
   "scenarios": [
     {
       "name": "Scenario 1 — No ST01 logic, balanced",
-      "purpose": "ST01 = 0 and no secondary location imbalance; default should follow counted qty.",
-      "expected_output": "Default system qty and count are equal. No Investigate. No ST01 MIN/MAX shown. No action required.",
+      "purpose": "Test the most basic scenario where ST01 = 0 and all locations counted were equal to the system count.",
+      "expected_output": "No action. No investigate. No ST01 MIN/MAX shown.",
       "default": {
         "warehouse": "50",
         "default_location": "3A1A",
@@ -17,9 +17,9 @@
     },
 
     {
-      "name": "Scenario 2 — ST01 eligible, count within MIN/MAX",
-      "purpose": "ST01 logic active but count is plausible; default should stay at system.",
-      "expected_output": "Scenario 2. Default count updated to system qty. Reason: Within tolerance of ST01 MIN/MAX.",
+      "name": "Scenario 2a — ST01 eligible, count within MIN/MAX",
+      "purpose": "Test where the default counted qty > than the default system qty, but within the expected MIN/MAX when taking ST01 into consideration. Secondary locations balance out.",
+      "expected_output": "Scenario 2. Default count updated to system qty with no variances to post. Reason: Within tolerance of ST01 MIN/MAX, and no secondary variances.",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -33,9 +33,9 @@
     },
 
     {
-      "name": "Scenario 2 — ST01 eligible, count BELOW MIN",
-      "purpose": "Count below plausible range; default should snap down and show below-MIN explanation.",
-      "expected_output": "Scenario 2. Default SetLocationQtyTo = counted qty. Reason shows ST01 MIN/MAX and 'below MIN by X'.",
+      "name": "Scenario 2b — ST01 eligible, count BELOW MIN, secondary imbalance",
+      "purpose": "Test where the default counted qty < than the default system qty (below expected MIN) and secondary locations did not balance out.",
+      "expected_output": "Scenario 2. Plausible that stock should have been transferred to secondary location. Secondary location net -2, so default +2 to offset. Net adjustment -8",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -49,19 +49,36 @@
     },
 
     {
-      "name": "Scenario 2 — ST01 eligible, count ABOVE MAX",
-      "purpose": "Count exceeds plausible range; default should snap down to MAX.",
-      "expected_output": "Scenario 2. Default SetLocationQtyTo = system + outside tolerance. Reason shows ST01 MIN/MAX and 'above MAX by X'.",
+      "name": "Scenario 2c — ST01 eligible, count ABOVE MAX, secondaries balanced",
+      "purpose": "Test where the default counted qty > than the default system qty (above expected MAX) and secondary locations balance out.",
+      "expected_output": "Scenario 2. Secondary locations - no change. Plausible that ST01 has not been pulled, expect up to 30 in default. Surplus of 10, set default to 30.",
       "default": {
         "warehouse": "50",
-        "default_location": "HPM2C",
+        "default_location": "10A.",
         "system_qty": 20,
         "counted_qty": 40,
         "st01_system_qty": 10
       },
       "secondaries": [
-        { "warehouse": "50", "location": "HPM2D", "system_qty": 5, "counted_qty": 5 },
-        { "warehouse": "50", "location": "CONT1", "system_qty": 3, "counted_qty": 3 }
+        { "warehouse": "50", "location": "CONT1", "system_qty": 5, "counted_qty": 5 },
+        { "warehouse": "50", "location": "CONT2", "system_qty": 3, "counted_qty": 3 }
+      ]
+    },
+
+        {
+      "name": "Scenario 2d — ST01 eligible, count ABOVE MAX, secondaries imbalanced",
+      "purpose": "Test where the default counted qty > than the default system qty (above expected MAX) and secondary locations did not balance out.",
+      "expected_output": "Scenario 2. Plausible that 2 should have been transferred to secondary location. Secondary location net +2, so default -2 to offset. Surplus of 10, -2, set default to 38.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "10A.",
+        "system_qty": 20,
+        "counted_qty": 40,
+        "st01_system_qty": 10
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "CONT1", "system_qty": 5, "counted_qty": 5 },
+        { "warehouse": "50", "location": "CONT2", "system_qty": 3, "counted_qty": 5 }
       ]
     },
 

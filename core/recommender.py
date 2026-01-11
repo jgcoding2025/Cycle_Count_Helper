@@ -326,15 +326,26 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
 
         # -----------------------------
         # Step F — Final set_location_qty_to outputs (default)
+        # Implement: default_set_to = MAX( scenario_base - net_secondary_adjustments, 0 )
         # -----------------------------
         if scenario == "Scenario 1":
-            default_set_to = default_counted
+            # Not ST01-eligible, balanced: baseline is the observed default count
+            scenario_base = default_counted
+
         elif scenario == "Scenario 2":
-            default_set_to = default_system + default_outside_tolerance_qty
+            # ST01-eligible, balanced: baseline is system plus any outside-tolerance qty
+            # (outside-tolerance qty is already 0 when count within MIN/MAX)
+            scenario_base = default_system + default_outside_tolerance_qty
+
         elif scenario in {"Scenario 3", "Scenario 4"}:
-            default_set_to = default_adjusted_with_constraint
+            # Unbalanced (would go < 0): baseline should be system; balancing will floor at 0
+            scenario_base = default_system
+
         else:
-            default_set_to = default_counted  # fallback (should not happen)
+            scenario_base = default_counted  # safe fallback
+
+        default_set_to = max(float(scenario_base) - float(net_secondary_adjustments), 0.0)
+
 
         # Write default row outputs
         df.loc[default_rows.index, "SetLocationQtyTo"] = float(default_set_to)
@@ -392,7 +403,9 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         reason_parts: list[str] = []
 
         # 1) Scenario + basic decision
-        reason_parts.append(f"{scenario} → Default set to {float(default_set_to):g} (System {default_system:g}, Count {default_counted:g}).")
+        reason_parts.append(
+            f"MAX of {scenario_base:g} - secondaries Δ of {net_secondary_adjustments:g} = {default_set_to:g}."
+        )
 
         # 2) Secondary summary
         # (net_secondary_adjustments is Σ(count-system) over secondaries)
