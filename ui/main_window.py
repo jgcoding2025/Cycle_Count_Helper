@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget
 
 from dataclasses import dataclass
 from pathlib import Path
+from html import escape
 import re
 import json
 
@@ -434,24 +435,26 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _update_rules_text(self) -> None:
-        self.rules_text.setHtml(
-            "<h3>Recommendation logic summary</h3>"
-            "<ol>"
-            "<li>Grouped by Warehouse + Item + Batch/lot; for WHS 50, secondaries are evaluated first, then default.</li>"
-            "<li>Warehouses other than 50 are still processed: every non-ST01 location is treated like a secondary and adjusted to match physical counts (no default updates or transfers).</li>"
-            "<li>ST01 is system-only and never counted; it is only used as a tolerance buffer for WHS 50 unsecured+available defaults.</li>"
-            "<li>Secured locations with any variance are always direct ADJUST to match the physical count (no transfers, no ST01 tolerance).</li>"
-            "<li><strong>Default rules (WHS 50 only):</strong>"
-            "<ol type=\"a\">"
-            "<li>If Default Count = 0 and default is unsecured+available with ST01 system qty &gt; 0, no default-empty issue; note that default may be physically full.</li>"
-            "<li>If default is unsecured+available, compute MIN = default system and MAX = MIN + SysST01; "
-            "within [MIN, MAX], snap the target entry to MIN.</li>"
-            "<li>If Default Count &lt; MIN, recommend adding only enough to reach MIN; if Default Count &gt; MAX, recommend removing only enough to reach MAX.</li>"
-            "<li>Non-eligible defaults compare directly to system.</li>"
-            "</ol>"
-            "</li>"
-            "</ol>"
-        )
+        reference_dir = Path("reference")
+        if not reference_dir.exists():
+            self.rules_text.setPlainText("Reference folder not found.")
+            return
+
+        sections: list[str] = []
+        for entry in sorted(reference_dir.iterdir(), key=lambda path: path.name.lower()):
+            if not entry.is_file():
+                continue
+            try:
+                content = entry.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = entry.read_text(encoding="latin-1")
+            sections.append(f"<h3>{escape(entry.name)}</h3><pre>{escape(content)}</pre>")
+
+        if not sections:
+            self.rules_text.setPlainText("No reference files found.")
+            return
+
+        self.rules_text.setHtml("".join(sections))
 
     # ---------- BUILD REVIEW ----------
     def _build_review(self) -> None:
