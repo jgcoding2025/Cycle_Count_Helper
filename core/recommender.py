@@ -239,7 +239,7 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         if default_rows.empty:
             df.loc[idx_all, "RecommendationType"] = "INVESTIGATE"
             df.loc[idx_all, "GroupHeadline"] = "Investigate"
-            df.loc[idx_all, "Reason"] = f"DefaultLocation '{default_loc}' not present as a row in recount lines for this item."
+            df.loc[idx_all, "Reason"] = f"DefaultLocation '{default_loc}' not present as a row for this item."
             df.loc[idx_all, "Confidence"] = "Low"
             df.loc[idx_all, "Severity"] = 90
             df.loc[idx_all, "_investigate"] = "Yes"
@@ -258,7 +258,7 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
                     "UnbalancedSecondary": "",
                     "ResidualUnbalanced": 0.0,
                     "RecommendationHeadline": "Investigate",
-                    "Reason": "Default row missing in recount lines",
+                    "Reason": "Default row missing in group",
                 }
             )
             continue
