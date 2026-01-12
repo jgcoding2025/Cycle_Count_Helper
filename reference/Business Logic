@@ -10,7 +10,11 @@ Step B — Compute default balancing math (always)
     default_adjusted_noconstraint = default_system − net_secondary_adjustments
     default_adjusted_with_constraint = max(default_adjusted_noconstraint, 0)
     residual_unbalanced = default_adjusted_noconstraint - default_adjusted_with_constraint
-    
+    default_MIN_capped = MAX(default_counted − ST01, 0)
+    default_MAX_capped = default_counted + ST01
+    expected_physical_min = MAX(default_system − ST01, 0)
+    expected_physical_max = default_system + ST01
+
     Interpretation:
     If residual_unbalanced is negative, secondaries are “over-counted” relative to system such that default would need to go below zero to balance;
     we clamp default to 0 and carry the negative residual.
@@ -30,13 +34,15 @@ Step D — Compute ST01 tolerance quantities (only meaningful when eligible)
         else if default_counted > expected_physical_max → default_counted - expected_physical_max
         else 0
 
-Step E — Scenarios (2×2 matrix from the two tags)
-1. scenario_1 = TRUE if eligible_for_ST01_logic="No" AND unbalanced_secondary="No"
-2. scenario_2 = TRUE if eligible_for_ST01_logic="Yes" AND unbalanced_secondary="No"
-3. scenario_3 = TRUE if eligible_for_ST01_logic="No" AND unbalanced_secondary="Yes"
-4. scenario_4 = TRUE if eligible_for_ST01_logic="Yes" AND unbalanced_secondary="Yes"
+Step E — Scenarios
+1. scenario_1 = TRUE if eligible_for_ST01_logic = "No" AND net_secondary_adjustments = 0
+2. scenario_2 = TRUE if eligible_for_ST01_logic = "Yes" AND net_secondary_adjustments = 0
+3. scenario_3 = TRUE if eligible_for_ST01_logic = "Yes" AND net_secondary_adjustments <> 0 AND unbalanced_secondary = "No"
+4. scenario_4 = TRUE if eligible_for_ST01_logic = "No" AND net_secondary_adjustments <> 0 AND unbalanced_secondary = "No"
+5. scenario_5 = TRUE if eligible_for_ST01_logic = "No" AND unbalanced_secondary = "Yes"
+6. scenario_6 = TRUE if eligible_for_ST01_logic = "Yes" AND unbalanced_secondary = "Yes"
     
-_scenario returns the matching label (“Scenario 1”…”Scenario 4”).
+_scenario returns the matching label (“Scenario 1”…”Scenario 6”).
 
 Step F — Final set_location_qty_to outputs
 1. For secondary rows: set_location_qty_to = count
@@ -44,9 +50,11 @@ Step F — Final set_location_qty_to outputs
 3. For default row:
     a. If _scenario = "Scenario 1" → set_location_qty_to = default_counted
     b. If _scenario = "Scenario 2" → set_location_qty_to = default_system + default_outside_tolerance_qty
-    c. If _scenario = "Scenario 3" → set_location_qty_to = default_adjusted_with_constraint
-    e. If _scenario = "Scenario 4" → set_location_qty_to = default_adjusted_with_constraint
-        AND trigger group header for Investigate
+    c. If _scenario = "Scenario 3" → set_location_qty_to = MIN(default_MAX_capped, MAX(default_MIN_capped, (default_system + default_outside_tolerance_qty) - net_secondary_adjustments))
+    d. If _scenario = "Scenario 4" → set_location_qty_to = default_counted
+    e. If _scenario = "Scenario 5" → set_location_qty_to = default_counted
+    f. If _scenario = "Scenario 6" → set_location_qty_to = MIN(default_MAX_capped, MAX(default_MIN_capped, default_adjusted_with_constraint))
+
         Recommend paths forward:
             If there exists an “Available / Available upon request” secondary with excess stock, recommend:
             Physically transfer {abs(residual_unbalanced)} to the default, then update location count.
@@ -54,7 +62,7 @@ Step F — Final set_location_qty_to outputs
             Check ST01 - may be inflated by approx. {abs(residual_unbalanced)}
 
 Step G — Trigger "Investigate" header + recommended paths forward when either condition is true:
-1. Scenario 4 rule: If _scenario = "Scenario 4" → Investigate = TRUE
+1. Scenario 6 rule: If _scenario = "Scenario 6" → Investigate = TRUE
 2. Residual/ST01 rule (additional, independent)
     a. If residual_unbalanced ≠ 0 AND ST01 > 0 → Investigate = TRUE
     Recommend:

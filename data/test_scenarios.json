@@ -17,9 +17,57 @@
     },
 
     {
-      "name": "Scenario 2a — ST01 eligible, count within MIN/MAX",
-      "purpose": "Test where the default counted qty > than the default system qty, but within the expected MIN/MAX when taking ST01 into consideration. Secondary locations balance out.",
-      "expected_output": "Scenario 2. Default count updated to system qty with no variances to post. Reason: Within tolerance of ST01 MIN/MAX, and no secondary variances.",
+      "name": "Scenario 2a — No ST01 logic, adjustment needed at both default and secondary",
+      "purpose": "Test where ST01 = 0 and adjustment is required at default.",
+      "expected_output": "Scenario 2 - Adjust default up by 5 and secondary down by 5.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "3A1A",
+        "system_qty": 25,
+        "counted_qty": 30,
+        "st01_system_qty": 0
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "OS16D1", "system_qty": 5, "counted_qty": 10 }
+      ]
+    },
+
+    {
+      "name": "Scenario 2b — No ST01 logic, secondary variance exists, unbalanced does not",
+      "purpose": "Test where secondary variance exists, and default is balanced.",
+      "expected_output": "Scenario 2. Adjust secondary down by 5.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "1C1A",
+        "system_qty": 10,
+        "counted_qty": 10,
+        "st01_system_qty": 0
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "ELEC", "system_qty": 10, "counted_qty": 5 }
+      ]
+    },
+
+    {
+      "name": "Scenario 3 — No ST01 logic, unbalanced secondary does apply",
+      "purpose": "Test where secondary variances are more than stock in the default location.",
+      "expected_output": "Scenario 3. Adjust secondary variance up 20.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "14S01A",
+        "system_qty": 10,
+        "counted_qty": 10,
+        "st01_system_qty": 0
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "OS16W1", "system_qty": 10, "counted_qty": 30 }
+      ]
+    },
+
+    {
+      "name": "Scenario 4a — ST01 eligible, count within MIN/MAX, secondary balanced",
+      "purpose": "Test where the default counted qty > than the default system qty, but within the expected MIN/MAX when taking ST01 into consideration. Secondary location balanced.",
+      "expected_output": "Scenario 4. Default count updated to system qty with no variances to post. Reason: Within tolerance of ST01 MIN/MAX, and no secondary variances.",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -33,9 +81,9 @@
     },
 
     {
-      "name": "Scenario 2b — ST01 eligible, count BELOW MIN, secondary imbalance",
-      "purpose": "Test where the default counted qty < than the default system qty (below expected MIN) and secondary locations did not balance out.",
-      "expected_output": "Scenario 2. Plausible that stock should have been transferred to secondary location. Secondary location net -2, so default +2 to offset. Net adjustment -8",
+      "name": "Scenario 4b — ST01 eligible, count BELOW MIN, secondary balanced",
+      "purpose": "Test where the default counted qty < than the default system qty (below expected MIN) and secondary location is balanced.",
+      "expected_output": "Scenario 4. Adjust ST01 down 10.",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -44,14 +92,14 @@
         "st01_system_qty": 5
       },
       "secondaries": [
-        { "warehouse": "50", "location": "HPM2D", "system_qty": 8, "counted_qty": 6 }
+        { "warehouse": "50", "location": "HPM2D", "system_qty": 8, "counted_qty": 8 }
       ]
     },
 
     {
-      "name": "Scenario 2c — ST01 eligible, count ABOVE MAX, secondaries balanced",
+      "name": "Scenario 4c — ST01 eligible, count ABOVE MAX, secondaries balanced",
       "purpose": "Test where the default counted qty > than the default system qty (above expected MAX) and secondary locations balance out.",
-      "expected_output": "Scenario 2. Secondary locations - no change. Plausible that ST01 has not been pulled, expect up to 30 in default. Surplus of 10, set default to 30.",
+      "expected_output": "Scenario 4. Plausible that ST01 has not been pulled, expect up to 30 in default. Surplus of 10, set default to 30. Secondary locations net 0.",
       "default": {
         "warehouse": "50",
         "default_location": "10A.",
@@ -60,15 +108,15 @@
         "st01_system_qty": 10
       },
       "secondaries": [
-        { "warehouse": "50", "location": "CONT1", "system_qty": 5, "counted_qty": 5 },
-        { "warehouse": "50", "location": "CONT2", "system_qty": 3, "counted_qty": 3 }
+        { "warehouse": "50", "location": "CONT1", "system_qty": 5, "counted_qty": 3 },
+        { "warehouse": "50", "location": "CONT2", "system_qty": 3, "counted_qty": 5 }
       ]
     },
 
-        {
-      "name": "Scenario 2d — ST01 eligible, count ABOVE MAX, secondaries imbalanced",
+    {
+      "name": "Scenario 5 — ST01 eligible, count ABOVE MAX, secondaries imbalanced",
       "purpose": "Test where the default counted qty > than the default system qty (above expected MAX) and secondary locations did not balance out.",
-      "expected_output": "Scenario 2. Plausible that 2 should have been transferred to secondary location. Secondary location net +2, so default -2 to offset. Surplus of 10, -2, set default to 38.",
+      "expected_output": "Scenario 5. Plausible that 2 should have been transferred to secondary location in the system, making system default 18 and expected MAX 28. Surplus would then be 12 at the default, so set default to 30 (18+12).",
       "default": {
         "warehouse": "50",
         "default_location": "10A.",
@@ -82,26 +130,11 @@
       ]
     },
 
-    {
-      "name": "Scenario 3 — No ST01 logic, unbalanced secondary",
-      "purpose": "Secondary excess would drive default negative; clamp default to zero without Investigate.",
-      "expected_output": "Scenario 3. Default SetLocationQtyTo = 0. No Investigate. Reason shows balancing and residual.",
-      "default": {
-        "warehouse": "50",
-        "default_location": "1C1A",
-        "system_qty": 10,
-        "counted_qty": 999,
-        "st01_system_qty": 0
-      },
-      "secondaries": [
-        { "warehouse": "50", "location": "ELEC", "system_qty": 0, "counted_qty": 25 }
-      ]
-    },
 
     {
-      "name": "Scenario 4 — ST01 eligible + unbalanced secondary (Investigate)",
+      "name": "Scenario 6 — ST01 eligible + unbalanced secondary (Investigate)",
       "purpose": "ST01 logic active and secondary imbalance forces negative default; Investigate must trigger.",
-      "expected_output": "Scenario 4. Default clamped to 0. Investigate header. Reason shows ST01 MIN/MAX and residual.",
+      "expected_output": "Scenario 6. Default clamped to 0. Investigate header. Reason shows ST01 MIN/MAX and residual.",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -115,8 +148,8 @@
     },
 
     {
-      "name": "Investigate guidance — Transfer to Default",
-      "purpose": "Scenario 4 where an Available/UPR secondary has excess stock.",
+      "name": "Scenario 6 - Investigate guidance — Transfer to Default",
+      "purpose": "Scenario 6 where an Available/UPR secondary has excess stock.",
       "expected_output": "Investigate. NEXT guidance recommends physically transferring residual qty to Default.",
       "default": {
         "warehouse": "50",
@@ -131,9 +164,9 @@
     },
 
     {
-      "name": "Investigate guidance — Check ST01 inflated",
-      "purpose": "Scenario 4 where secondary excess exists but is NOT Available/UPR.",
-      "expected_output": "Investigate. NEXT guidance recommends checking ST01 inflation.",
+      "name": "Scenario 6 - Investigate guidance — Check ST01 inflated",
+      "purpose": "Scenario 6 where secondary excess exists but is not in an overstock location.",
+      "expected_output": "Investigate. Recommends checking ST01 inflation.",
       "default": {
         "warehouse": "50",
         "default_location": "HPM2C",
@@ -160,22 +193,7 @@
       "secondaries": [
         { "warehouse": "50", "location": "ZZZZZ", "system_qty": 0, "counted_qty": 5 }
       ]
-    },
-
-    {
-      "name": "No variance — clean pass",
-      "purpose": "All system quantities equal counted quantities; recommender should do nothing.",
-      "expected_output": "No adjustments. GroupHeadline = No variance. No Investigate.",
-      "default": {
-        "warehouse": "50",
-        "default_location": "HPM2C",
-        "system_qty": 10,
-        "counted_qty": 10,
-        "st01_system_qty": 0
-      },
-      "secondaries": [
-        { "warehouse": "50", "location": "ELEC", "system_qty": 5, "counted_qty": 5 }
-      ]
     }
+
   ]
 }

@@ -268,6 +268,8 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         default_loc_type = default_rows["Location Type"].iloc[0] if "Location Type" in default_rows.columns else None
         default_alloc_cat = default_rows["Allocation Category"].iloc[0] if "Allocation Category" in default_rows.columns else None
 
+        default_is_unsecured = _default_is_unsecured(default_loc_type)
+
         # -----------------------------
         # Step A — Secondary adjustments
         # 1) For every secondary row: set_location_qty_to = count
@@ -284,6 +286,7 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
                 lambda d: "Secondary set to count." if d != 0 else "Secondary already matches system."
             )
         net_secondary_adjustments = float((secondary_rows["CountQty"] - secondary_rows["SystemQty"]).sum()) if not secondary_rows.empty else 0.0
+        secondary_variance_exists = abs(float(net_secondary_adjustments)) > 1e-9
 
         # ST01 row: blank / excluded (Step F.2)
         if is_st01.any():
@@ -322,38 +325,83 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         # -----------------------------
         # Step E — Scenario 2x2
         # -----------------------------
-        scenario = _scenario_label(eligible_for_st01_logic, unbalanced_secondary)
+        def _scenario_label(st01_eligible: bool, secondary_variance_exists: bool, unbalanced_secondary: bool) -> str:
+            # Scenario 1: ST01 logic and secondary variances do not apply
+            if (not st01_eligible) and (not secondary_variance_exists):
+                return "Scenario 1"
+
+            # Scenario 2: ST01 logic does not apply, secondary variances do, unbalanced does not
+            if (not st01_eligible) and secondary_variance_exists and (not unbalanced_secondary):
+                return "Scenario 2"
+
+            # Scenario 3: ST01 logic does not apply, unbalanced secondary does
+            if (not st01_eligible) and unbalanced_secondary:
+                return "Scenario 3"
+            
+            # Scenario 4: ST01 logic applies, secondary variances do not apply
+            if st01_eligible and (not secondary_variance_exists):
+                return "Scenario 4"
+
+            # Scenario 5: ST01 logic and secondary variances both apply, unbalanced does not
+            if st01_eligible and secondary_variance_exists and (not unbalanced_secondary):
+                return "Scenario 5"
+
+            # Scenario 6: ST01 logic and unbalanced secondary both apply
+            return "Scenario 6"
+
+        scenario = _scenario_label(eligible_for_st01_logic, secondary_variance_exists, unbalanced_secondary)
 
         # -----------------------------
         # Step F — Final set_location_qty_to outputs (default)
-        # Implement: default_set_to = MAX( scenario_base - net_secondary_adjustments, 0 )
         # -----------------------------
+
+        default_min_capped = max(float(default_counted) - float(st01_qty), 0.0)
+        default_max_capped = float(default_counted) + float(st01_qty)
+
         if scenario == "Scenario 1":
-            # Not ST01-eligible, balanced: baseline is the observed default count
-            scenario_base = default_counted
+            # ST01 not eligible; no secondary variance -> trust default count
+            default_set_to = float(default_counted)
 
         elif scenario == "Scenario 2":
-            # ST01-eligible, balanced: baseline is system plus any outside-tolerance qty
-            # (outside-tolerance qty is already 0 when count within MIN/MAX)
-            scenario_base = default_system + default_outside_tolerance_qty
+            # ST01 not eligible; secondary variance exists (but not unbalanced) -> DO NOT absorb
+            default_set_to = float(default_counted)
 
-        elif scenario in {"Scenario 3", "Scenario 4"}:
-            # Unbalanced (would go < 0): baseline should be system; balancing will floor at 0
-            scenario_base = default_system
+        elif scenario == "Scenario 3":
+            # ST01 not eligible; unbalanced secondary -> still DO NOT absorb
+            default_set_to = float(default_counted)
+        
+        elif scenario == "Scenario 4":
+            # ST01 eligible; no secondary variance -> ST01-aware target
+            default_set_to = max(float(default_system + default_outside_tolerance_qty), 0.0)
+
+        elif scenario == "Scenario 5":
+            # ST01 eligible; secondary variance exists (but not unbalanced)
+            default_set_to = min(
+                float(default_max_capped),
+                max(float(default_min_capped),
+                float(default_system + default_outside_tolerance_qty) - net_secondary_adjustments
+                )
+            )
+
+        elif scenario == "Scenario 6":
+            # ST01 eligible; unbalanced secondary applies
+            default_set_to = min(
+                default_max_capped,
+                max(default_min_capped, float(default_adjusted_with_constraint))
+            )
 
         else:
-            scenario_base = default_counted  # safe fallback
+            # Safe fallback
+            default_set_to = float(default_counted)
 
-        default_set_to = max(float(scenario_base) - float(net_secondary_adjustments), 0.0)
 
-
-        # Write default row outputs
+        # Apply outputs to default row(s)
         df.loc[default_rows.index, "SetLocationQtyTo"] = float(default_set_to)
 
-        # RecommendationType for default based on whether it changes system qty
         default_delta = float(default_set_to) - float(default_system)
-        df.loc[default_rows.index, "RecommendationType"] = "ADJUST" if default_delta != 0 else "NO_ACTION"
+        df.loc[default_rows.index, "RecommendationType"] = "ADJUST" if abs(default_delta) > 1e-9 else "NO_ACTION"
         df.loc[default_rows.index, "RecommendedQty"] = abs(default_delta)
+
 
         # -----------------------------
         # Step G — Investigate triggers + recommended paths forward
@@ -361,10 +409,10 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         investigate = False
         reasons: list[str] = []
 
-        # Scenario 4 rule
-        if scenario == "Scenario 4":
+        # Scenario 6 rule
+        if scenario == "Scenario 6":
             investigate = True
-            reasons.append("Scenario 4: ST01-eligible AND unbalanced secondary (default would need < 0 to balance; clamped to 0).")
+            reasons.append("Scenario 6: ST01-eligible AND unbalanced secondary (default would need < 0 to balance; clamped to 0).")
 
         # Residual/ST01 rule (independent)
         if (residual_unbalanced != 0) and (st01_qty > 0):
@@ -399,55 +447,90 @@ def apply_recommendations(review_lines: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         # -----------------------------
         # Concise Reason text
         # - Always show ST01 MIN/MAX when ST01 != 0
-        # -----------------------------
-        reason_parts: list[str] = []
+        # ---------- Default note builder (plain English) ----------
+        parts: list[str] = []
 
-        # 1) Scenario + basic decision
-        reason_parts.append(
-            f"MAX of {scenario_base:g} - secondaries Δ of {net_secondary_adjustments:g} = {default_set_to:g}."
-        )
+        # 1) Scenario label (always)
+        parts.append(f"{scenario}")
 
-        # 2) Secondary summary
-        # (net_secondary_adjustments is Σ(count-system) over secondaries)
-        if not secondary_rows.empty:
-            reason_parts.append(f"Secondaries net Δ = {net_secondary_adjustments:g}.")
-        else:
-            reason_parts.append("No secondary locations.")
+        # 2) Net secondaries (only if non-zero)
+        if abs(float(net_secondary_adjustments)) > 1e-9:
+            parts.append(f"Net Secondaries = {float(net_secondary_adjustments):g}")
 
-        # 3) ST01 MIN/MAX always when ST01 has qty
-        if st01_qty != 0:
-            expected_min = default_system
-            expected_max = default_system + st01_qty
-            # Add a short note if count is outside the plausible band
-            if default_counted < expected_min:
-                tol_note = f"Below MIN by {expected_min - default_counted:g}."
-            elif default_counted > expected_max:
-                tol_note = f"Above MAX by {default_counted - expected_max:g}."
-            else:
-                tol_note = "Count is within range."
-            reason_parts.append(f"ST01 range: MIN {expected_min:g} / MAX {expected_max:g} (ST01 {st01_qty:g}). {tol_note}")
+        # 3) Expected MIN/MAX (only if ST01 logic eligible)
+        # Use eligible_for_st01_logic (not default_is_unsecured) to avoid undefined var + mismatches
+        default_var = float(default_counted) - float(default_system)
 
-        # 4) Balancing math (short)
-        # Only show the constraint line if it matters (Scenario 3/4 or residual exists)
-        if scenario in {"Scenario 3", "Scenario 4"} or residual_unbalanced != 0:
-            reason_parts.append(
-                f"Balancing: Default target = {default_adjusted_noconstraint:g} → constrained to {default_adjusted_with_constraint:g} (residual {residual_unbalanced:g})."
+        if eligible_for_st01_logic:
+            exp_min = float(default_system)
+            exp_max = float(default_system) + float(st01_qty)
+            parts.append(f"Expected: MIN = {exp_min:g}, MAX = {exp_max:g}")
+
+        # 4) Plain-English explanation of the default setpoint
+        has_secondaries = not secondary_rows.empty
+
+        default_adj = float(default_set_to) - float(default_system)
+
+        if eligible_for_st01_logic and abs(float(residual_unbalanced)) > 1e-9:
+            # default hit 0 floor
+            explanation = (
+                "Default could not fully offset the secondary changes without going negative, "
+                f"so it was capped at {float(default_set_to):g}. Follow-up required."
             )
+        else:
+            # No residual. Choose the simplest correct sentence.
+            if abs(net_secondary_adjustments) <= 1e-9 and abs(default_adj) <= 1e-9:
+                if abs(default_var) > 1e-9:
+                    # Physical variance exists, but no adjustment is required
+                    if eligible_for_st01_logic:
+                        explanation = (
+                            "No adjustment required. Default variance is within the expected ST01 range."
+                        )
+                    else:
+                        explanation = (
+                            "No adjustment required. Default variance does not require correction under current rules."
+                        )
+                else:
+                    # Truly no variance anywhere
+                    explanation = (
+                        "No adjustment required. Default and secondary locations match system quantities."
+                        if has_secondaries
+                        else "No adjustment required. Default location matches system quantity."
+                    )
 
-        # 5) Eligibility note (short, only if ST01 exists)
-        if st01_qty != 0:
-            if eligible_for_st01_logic:
-                reason_parts.append("ST01 logic applied ✅")
+            elif abs(float(net_secondary_adjustments)) > 1e-9 and abs(default_adj) > 1e-9:
+                if eligible_for_st01_logic and float(default_counted) < float(default_system):
+                    explanation = (
+                        "Secondary locations were adjusted. Default count is below the expected ST01 range, "
+                        "so the default location was set to the calculated target (not the count)."
+                    )
+                else:
+                    explanation = (
+                        "Secondary locations were adjusted, and the default location was adjusted to keep the item consistent overall."
+                    )
+
+            elif abs(float(net_secondary_adjustments)) > 1e-9 and abs(default_adj) <= 1e-9:
+                explanation = (
+                    "Secondary locations were adjusted. Default did not change under the current rules."
+                )
             else:
-                reason_parts.append("ST01 logic NOT eligible (shown for plausibility only).")
+                # default moved even though secondaries didn't (often ST01-driven)
+                if eligible_for_st01_logic and float(st01_qty) > 0:
+                    explanation = (
+                        "ST01 inventory may be present. Default was adjusted to the balanced target to avoid double-counting offlined inventory."
+                    )
+                else:
+                    explanation = "Default location was adjusted per scenario rules."
 
-        # 6) Investigate + guidance
-        if investigate and reasons:
-            reason_parts.append("INVESTIGATE: " + " ".join(reasons))
-        if guidance:
-            reason_parts.append("NEXT: " + " ".join(guidance))
+        # Optional: append guidance if investigate is true
+        # Keep it short; avoid ST01 mentions unless ST01 > 0 (your rules already enforce this)
+        if investigate and guidance:
+            explanation = explanation + " " + " ".join(guidance)
 
-        df.loc[default_rows.index, "Reason"] = " | ".join(reason_parts)
+        default_note = " | ".join(parts + [explanation])
+
+        for didx in default_rows.index:
+            df.loc[didx, "Reason"] = default_note
 
         # Also stamp scenario/tags onto all rows in group for auditing/filtering
         df.loc[idx_all, "_eligible_for_ST01_logic"] = "Yes" if eligible_for_st01_logic else "No"
