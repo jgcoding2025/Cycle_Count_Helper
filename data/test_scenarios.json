@@ -114,7 +114,7 @@
     },
 
     {
-      "name": "Scenario 5 — ST01 eligible, count ABOVE MAX, secondaries imbalanced",
+      "name": "Scenario 5a — ST01 eligible, count ABOVE MAX, secondaries imbalanced",
       "purpose": "Test where the default counted qty > than the default system qty (above expected MAX) and secondary locations did not balance out.",
       "expected_output": "Scenario 5. Plausible that 2 should have been transferred to secondary location in the system, making system default 18 and expected MAX 28. Surplus would then be 12 at the default, so set default to 30 (18+12).",
       "default": {
@@ -127,6 +127,22 @@
       "secondaries": [
         { "warehouse": "50", "location": "CONT1", "system_qty": 5, "counted_qty": 5 },
         { "warehouse": "50", "location": "CONT2", "system_qty": 3, "counted_qty": 5 }
+      ]
+    },
+
+    {
+      "name": "Scenario 5b — ST01 eligible, count BELOW MIN, secondaries imbalanced",
+      "purpose": "Test where the default counted qty < than the default system qty (below expected MIN) and secondary locations did not balance out.",
+      "expected_output": "Scenario 5. This scenario occurred during inventory and recommends setting the default to 4, which appears to be incorrect. Review logic, ST01 should not have been assumed to be not pulled.",
+      "default": {
+        "warehouse": "50",
+        "default_location": "15W02A",
+        "system_qty": 22,
+        "counted_qty": 9,
+        "st01_system_qty": 5
+      },
+      "secondaries": [
+        { "warehouse": "50", "location": "15W03A", "system_qty": 0, "counted_qty": 13 }
       ]
     },
 
